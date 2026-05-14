@@ -24,11 +24,18 @@ type Client struct {
 	context string
 }
 
-// NewClient builds a client from $KUBECONFIG (falling back to ~/.kube/config)
-// and returns the current context name alongside the client.
+// NewClient builds a client using $KUBECONFIG (strict — must exist) or the
+// default precedence (~/.kube/config, best-effort). Returns a friendly error
+// when no config is reachable so the user knows what to do.
 func NewClient() (*Client, error) {
 	loading := clientcmd.NewDefaultClientConfigLoadingRules()
-	loading.ExplicitPath = kubeconfigPath()
+	// Only force a single path when the user explicitly set $KUBECONFIG.
+	// Otherwise let the default precedence rules look at ~/.kube/config
+	// without erroring when it's missing — we'll surface a friendlier
+	// message below.
+	if p := os.Getenv("KUBECONFIG"); p != "" {
+		loading.ExplicitPath = p
+	}
 
 	cfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		loading,
@@ -37,7 +44,10 @@ func NewClient() (*Client, error) {
 
 	raw, err := cfg.RawConfig()
 	if err != nil {
-		return nil, fmt.Errorf("read kubeconfig: %w", err)
+		return nil, fmt.Errorf("read kubeconfig (%s): %w", kubeconfigHint(), err)
+	}
+	if len(raw.Contexts) == 0 || raw.CurrentContext == "" {
+		return nil, fmt.Errorf("no kubeconfig found at %s — set $KUBECONFIG or create one (e.g. via `kubectl config`)", kubeconfigHint())
 	}
 
 	restCfg, err := cfg.ClientConfig()
@@ -53,13 +63,15 @@ func NewClient() (*Client, error) {
 	return &Client{cs: cs, context: raw.CurrentContext}, nil
 }
 
-func kubeconfigPath() string {
+// kubeconfigHint returns the path the user would expect us to read from, for
+// inclusion in error messages.
+func kubeconfigHint() string {
 	if p := os.Getenv("KUBECONFIG"); p != "" {
 		return p
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "~/.kube/config"
 	}
 	return filepath.Join(home, ".kube", "config")
 }
