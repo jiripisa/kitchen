@@ -201,7 +201,7 @@ func (m *namespaceModel) View() string {
 		[]components.StatusItem{
 			{Key: "context", Value: m.client.Context()},
 		},
-		"type to filter · ↑/↓ move · enter select · esc back · ^c quit",
+		pickerHint(m.list.FilterState()),
 	))
 	return b.String()
 }

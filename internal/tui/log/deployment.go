@@ -172,7 +172,7 @@ func (m *deploymentModel) View() string {
 			{Key: "context", Value: m.client.Context()},
 			{Key: "ns", Value: m.namespace},
 		},
-		"type to filter · ↑/↓ move · enter select · esc back · ^c quit",
+		pickerHint(m.list.FilterState()),
 	))
 	return b.String()
 }

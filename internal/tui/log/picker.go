@@ -154,6 +154,16 @@ func substringFilter(term string, targets []string) []list.Rank {
 	return out
 }
 
+// pickerHint returns the keybinding hint shown in the status bar of either
+// picker. It adapts to the current filter state so the user is always told
+// what esc does next.
+func pickerHint(state list.FilterState) string {
+	if state == list.Unfiltered {
+		return "type to filter · ↑/↓ move · enter select · esc back · ^c quit"
+	}
+	return "↑/↓ move · enter select · esc clear filter · ^c quit"
+}
+
 // syncListTitle keeps the list's title visible when a filter is applied so
 // the user always knows what's being filtered. In Filtering state (user is
 // actively typing) the list renders "Filter: <input-with-cursor>" itself, so
