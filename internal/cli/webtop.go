@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,14 +30,14 @@ const (
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
-		Short: "List all deployments running the webtop application.",
+		Short: "List all deployments running the webtop application, grouped by backend.",
 		Long: "Lists every Deployment across all namespaces in the current kubeconfig " +
 			"context whose pod template runs the webtop container image (" +
-			webtopImageRepo + "). Identification is image-based, not name-based, " +
-			"so it survives Deployment renames and matches review-apps, staging, " +
-			"and production uniformly. Output is `namespace/name  backend-url` per " +
-			"line, where backend-url is the MAFIN_URL the webtop instance is wired " +
-			"to (or `-` when it isn't set). Easy to pipe into awk/cut.",
+			webtopImageRepo + "), grouped by the backend URL each instance is wired " +
+			"to (MAFIN_URL env var). Webtops with no backend set are listed last under " +
+			"\"(no backend)\". Identification is image-based, not name-based, so it " +
+			"survives Deployment renames and matches review-apps, staging, and production " +
+			"uniformly.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -50,26 +52,100 @@ func newWebtopCmd() *cobra.Command {
 				return err
 			}
 
-			found := 0
-			out := cmd.OutOrStdout()
+			entries := make([]webtopEntry, 0, len(deps))
 			for _, d := range deps {
 				if !isWebtopDeployment(d) {
 					continue
 				}
-				backend := webtopBackend(d)
-				if backend == "" {
-					backend = "-"
-				}
-				fmt.Fprintf(out, "%s/%s  %s\n", d.Namespace, d.Name, backend)
-				found++
+				entries = append(entries, webtopEntry{
+					Namespace: d.Namespace,
+					Name:      d.Name,
+					Backend:   webtopBackend(d),
+				})
 			}
-			if found == 0 {
+
+			if len(entries) == 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"no deployments running image %q found in context %q\n",
 					webtopImageRepo, client.Context())
+				return nil
 			}
+
+			renderWebtopGroups(cmd.OutOrStdout(), groupWebtops(entries))
 			return nil
 		},
+	}
+}
+
+// webtopEntry is one row in the cross-namespace webtop listing.
+type webtopEntry struct {
+	Namespace string
+	Name      string
+	Backend   string
+}
+
+// webtopGroup is a backend URL together with every webtop wired to it.
+type webtopGroup struct {
+	Backend string
+	Entries []webtopEntry
+}
+
+// groupWebtops buckets entries by backend URL. Buckets are returned in a
+// stable order: backend URLs alphabetically first, the empty backend last
+// (rendered as "(no backend)"). Entries within each bucket are sorted by
+// (namespace, name).
+func groupWebtops(entries []webtopEntry) []webtopGroup {
+	bucket := map[string][]webtopEntry{}
+	for _, e := range entries {
+		bucket[e.Backend] = append(bucket[e.Backend], e)
+	}
+
+	keys := make([]string, 0, len(bucket))
+	for k := range bucket {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		switch {
+		case keys[i] == "":
+			return false
+		case keys[j] == "":
+			return true
+		default:
+			return keys[i] < keys[j]
+		}
+	})
+
+	out := make([]webtopGroup, 0, len(keys))
+	for _, k := range keys {
+		items := bucket[k]
+		sort.Slice(items, func(a, b int) bool {
+			if items[a].Namespace != items[b].Namespace {
+				return items[a].Namespace < items[b].Namespace
+			}
+			return items[a].Name < items[b].Name
+		})
+		out = append(out, webtopGroup{Backend: k, Entries: items})
+	}
+	return out
+}
+
+// renderWebtopGroups prints groups as plain text: backend URL (count),
+// then indented namespace/name children, with a blank line between groups.
+// Format is intentionally human-first; for raw machine-readable output use
+// kubectl directly.
+func renderWebtopGroups(w io.Writer, groups []webtopGroup) {
+	for i, g := range groups {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		label := g.Backend
+		if label == "" {
+			label = "(no backend)"
+		}
+		fmt.Fprintf(w, "%s (%d)\n", label, len(g.Entries))
+		for _, e := range g.Entries {
+			fmt.Fprintf(w, "  %s/%s\n", e.Namespace, e.Name)
+		}
 	}
 }
 

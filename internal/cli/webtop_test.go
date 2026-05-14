@@ -1,10 +1,65 @@
 package cli
 
 import (
+	"bytes"
+	"reflect"
 	"testing"
 
 	"github.com/jiripisa/kitchen/internal/k8s"
 )
+
+func TestGroupWebtops(t *testing.T) {
+	in := []webtopEntry{
+		// out of order on purpose
+		{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main"},
+		{Namespace: "mafin", Name: "no-backend", Backend: ""},
+		{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main"},
+		{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1"},
+		{Namespace: "other", Name: "shared", Backend: "https://coreo.main"},
+	}
+	got := groupWebtops(in)
+
+	want := []webtopGroup{
+		{Backend: "https://coreo-feat-1", Entries: []webtopEntry{
+			{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1"},
+		}},
+		{Backend: "https://coreo.main", Entries: []webtopEntry{
+			{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main"},
+			{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main"},
+			{Namespace: "other", Name: "shared", Backend: "https://coreo.main"},
+		}},
+		{Backend: "", Entries: []webtopEntry{
+			{Namespace: "mafin", Name: "no-backend", Backend: ""},
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("groupWebtops mismatch:\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestRenderWebtopGroups(t *testing.T) {
+	groups := []webtopGroup{
+		{Backend: "https://coreo.main", Entries: []webtopEntry{
+			{Namespace: "mafin", Name: "app-a"},
+			{Namespace: "mafin", Name: "app-b"},
+		}},
+		{Backend: "", Entries: []webtopEntry{
+			{Namespace: "mafin", Name: "orphan"},
+		}},
+	}
+	var buf bytes.Buffer
+	renderWebtopGroups(&buf, groups)
+
+	want := "https://coreo.main (2)\n" +
+		"  mafin/app-a\n" +
+		"  mafin/app-b\n" +
+		"\n" +
+		"(no backend) (1)\n" +
+		"  mafin/orphan\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("render mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
 
 func TestIsWebtopImage(t *testing.T) {
 	cases := []struct {
