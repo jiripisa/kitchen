@@ -95,11 +95,19 @@ func (c *Client) ListNamespaces(ctx context.Context) ([]string, error) {
 
 // Deployment is the trimmed-down view of a Deployment that the TUI cares about.
 type Deployment struct {
-	Name      string
-	Namespace string
-	Selector  map[string]string
-	Replicas  int32
-	Ready     int32
+	Name       string
+	Namespace  string
+	Selector   map[string]string
+	Replicas   int32
+	Ready      int32
+	Containers []Container
+}
+
+// Container is the subset of a pod-spec container we expose — enough to
+// identify what application a Deployment is running.
+type Container struct {
+	Name  string
+	Image string
 }
 
 // ListDeployments returns all deployments in a namespace.
@@ -148,12 +156,17 @@ func toDeployment(d appsv1.Deployment) Deployment {
 	if d.Spec.Replicas != nil {
 		replicas = *d.Spec.Replicas
 	}
+	containers := make([]Container, 0, len(d.Spec.Template.Spec.Containers))
+	for _, c := range d.Spec.Template.Spec.Containers {
+		containers = append(containers, Container{Name: c.Name, Image: c.Image})
+	}
 	return Deployment{
-		Name:      d.Name,
-		Namespace: d.Namespace,
-		Selector:  sel,
-		Replicas:  replicas,
-		Ready:     d.Status.ReadyReplicas,
+		Name:       d.Name,
+		Namespace:  d.Namespace,
+		Selector:   sel,
+		Replicas:   replicas,
+		Ready:      d.Status.ReadyReplicas,
+		Containers: containers,
 	}
 }
 

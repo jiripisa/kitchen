@@ -25,7 +25,7 @@ curl -fsSL .../install.sh | KITCHEN_INSTALL_DIR=/usr/local/bin sh
 
 ```sh
 kitchen log       # pick namespace → pick deployment → stream logs
-kitchen webtop    # list webtop deployments (mafin-coreo-app-*) across all namespaces
+kitchen webtop    # list webtop deployments (image ghcr.io/finforce/mafin-coreo-app) across all namespaces
 kitchen upgrade   # check for a newer release and replace the running binary
 kitchen version   # print version, commit, build date
 ```

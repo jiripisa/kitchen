@@ -62,6 +62,24 @@ Visual approach in the pickers:
 If reading the store fails (corrupt JSON, unreadable disk), the TUI falls
 back to an in-memory store and still works — recents are nice-to-have.
 
+### Webtop detection: image-based, not name-based
+
+`kitchen webtop` lists deployments by matching the container image repo
+(`ghcr.io/finforce/mafin-coreo-app`), not the Deployment name prefix
+(`mafin-coreo-app-*`). The image repo is the canonical identity of the
+project — it's the same across review-apps, staging and production, and
+survives Deployment renames. Name prefix would be brittle: it picks up
+false positives (any deployment named `mafin-coreo-app-foo`) and breaks
+on rename (e.g. a future `webtop-prod` deployment would be invisible).
+
+We accept three image-ref shapes: bare repo (`<repo>`), tagged
+(`<repo>:<tag>`) and digest-pinned (`<repo>@sha256:…`) so digest-pinned
+production deployments aren't missed.
+
+If/when a second app needs the same treatment, this should move into a
+config file (`~/.config/kitchen/apps.yaml`) keyed by app name → image
+repo, so adding an app is data, not code.
+
 ### Versioning
 
 `version`, `commit`, `date` are package-level `var`s in `internal/version`
