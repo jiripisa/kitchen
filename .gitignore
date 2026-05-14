@@ -1,0 +1,20 @@
+# Binaries
+/kitchen
+/bin/
+/dist/
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+coverage.txt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local env
+.env
+.envrc
