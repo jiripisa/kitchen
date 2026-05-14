@@ -1,9 +1,13 @@
 package log
 
 import (
+	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jiripisa/kitchen/internal/tui/styles"
 )
@@ -20,31 +24,59 @@ func (i simpleItem) Title() string       { return i.title }
 func (i simpleItem) Description() string { return i.desc }
 func (i simpleItem) FilterValue() string { return i.title }
 
-// newPickerDelegate returns a list delegate themed with the kitchen palette.
-func newPickerDelegate() list.DefaultDelegate {
-	d := list.NewDefaultDelegate()
+// compactDelegate renders a list item on a single line so the picker shows
+// many entries at once. If the item has a description, it's right-aligned
+// on the same row as the title.
+type compactDelegate struct{}
 
-	d.Styles.NormalTitle = lipgloss.NewStyle().
-		Foreground(styles.ColorText).
-		Padding(0, 0, 0, 2)
-	d.Styles.NormalDesc = lipgloss.NewStyle().
-		Foreground(styles.ColorDim).
-		Padding(0, 0, 0, 2)
+func (d compactDelegate) Height() int                              { return 1 }
+func (d compactDelegate) Spacing() int                             { return 0 }
+func (d compactDelegate) Update(tea.Msg, *list.Model) tea.Cmd      { return nil }
 
-	d.Styles.SelectedTitle = lipgloss.NewStyle().
-		Foreground(styles.ColorAccent).
-		Bold(true).
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(styles.ColorAccent).
-		Padding(0, 0, 0, 1)
-	d.Styles.SelectedDesc = lipgloss.NewStyle().
-		Foreground(styles.ColorAccent2).
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(styles.ColorAccent).
-		Padding(0, 0, 0, 1)
+var (
+	compactTitle         = lipgloss.NewStyle().Foreground(styles.ColorText)
+	compactDesc          = lipgloss.NewStyle().Foreground(styles.ColorDim)
+	compactSelectedTitle = lipgloss.NewStyle().Foreground(styles.ColorAccent).Bold(true)
+	compactSelectedDesc  = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
+)
 
-	d.Styles.DimmedTitle = lipgloss.NewStyle().Foreground(styles.ColorDim).Padding(0, 0, 0, 2)
-	d.Styles.DimmedDesc = lipgloss.NewStyle().Foreground(styles.ColorDim).Padding(0, 0, 0, 2)
+func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	it, ok := item.(simpleItem)
+	if !ok {
+		return
+	}
 
-	return d
+	selected := index == m.Index()
+
+	prefix := "  "
+	titleStyle := compactTitle
+	descStyle := compactDesc
+	if selected {
+		prefix = "▸ "
+		titleStyle = compactSelectedTitle
+		descStyle = compactSelectedDesc
+	}
+
+	width := m.Width()
+	if width <= 0 {
+		width = 80
+	}
+
+	title := titleStyle.Render(it.title)
+	line := prefix + title
+
+	if it.desc != "" {
+		desc := descStyle.Render(it.desc)
+		gap := width - lipgloss.Width(line) - lipgloss.Width(desc) - 2
+		if gap < 1 {
+			gap = 1
+		}
+		line += strings.Repeat(" ", gap) + desc
+	}
+
+	fmt.Fprint(w, line)
 }
+
+// newPickerDelegate returns the compact one-line-per-item delegate used by
+// both pickers.
+func newPickerDelegate() list.ItemDelegate { return compactDelegate{} }
