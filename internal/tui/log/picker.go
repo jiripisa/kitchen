@@ -106,12 +106,15 @@ func renderSimpleItem(width int, it simpleItem, selected bool) string {
 	line := prefix + title
 
 	if it.desc != "" {
-		desc := descStyle.Render(it.desc)
-		gap := width - lipgloss.Width(line) - lipgloss.Width(desc) - 2
-		if gap < 1 {
-			gap = 1
-		}
-		line += strings.Repeat(" ", gap) + desc
+		// Render desc immediately after the title with a small fixed gap,
+		// rather than right-aligning to the window edge — names vary in
+		// length so ragged-right reads better than a far-away column.
+		line += "  " + descStyle.Render(it.desc)
+	}
+	// Clamp to the available width so a stray long line can't break the
+	// layout of the list.
+	if w := lipgloss.Width(line); w > width {
+		line = lipgloss.NewStyle().MaxWidth(width).Render(line)
 	}
 	return line
 }
