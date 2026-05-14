@@ -15,6 +15,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	root.AddCommand(newLogCmd())
 	root.AddCommand(newVersionCmd())
 
 	return root
