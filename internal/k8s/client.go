@@ -104,10 +104,15 @@ type Deployment struct {
 }
 
 // Container is the subset of a pod-spec container we expose — enough to
-// identify what application a Deployment is running.
+// identify what application a Deployment is running and to read its
+// literal environment values.
 type Container struct {
 	Name  string
 	Image string
+	// Env holds direct (literal) env values from the pod spec. Entries
+	// sourced from ConfigMaps, Secrets or fieldRefs (valueFrom) are skipped
+	// because resolving them requires extra API calls per deployment.
+	Env map[string]string
 }
 
 // ListDeployments returns all deployments in a namespace.
@@ -158,7 +163,13 @@ func toDeployment(d appsv1.Deployment) Deployment {
 	}
 	containers := make([]Container, 0, len(d.Spec.Template.Spec.Containers))
 	for _, c := range d.Spec.Template.Spec.Containers {
-		containers = append(containers, Container{Name: c.Name, Image: c.Image})
+		env := map[string]string{}
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				env[e.Name] = e.Value
+			}
+		}
+		containers = append(containers, Container{Name: c.Name, Image: c.Image, Env: env})
 	}
 	return Deployment{
 		Name:       d.Name,

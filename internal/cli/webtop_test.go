@@ -37,6 +37,54 @@ func TestIsWebtopImage(t *testing.T) {
 	}
 }
 
+func TestWebtopBackend(t *testing.T) {
+	cases := []struct {
+		name string
+		d    k8s.Deployment
+		want string
+	}{
+		{
+			name: "backend present on webtop container",
+			d: k8s.Deployment{Containers: []k8s.Container{{
+				Name:  "mafin-coreo-app",
+				Image: "ghcr.io/finforce/mafin-coreo-app:foo",
+				Env:   map[string]string{"MAFIN_URL": "https://coreo.mafin.finforce.dev"},
+			}}},
+			want: "https://coreo.mafin.finforce.dev",
+		},
+		{
+			name: "no env at all",
+			d: k8s.Deployment{Containers: []k8s.Container{{
+				Name:  "mafin-coreo-app",
+				Image: "ghcr.io/finforce/mafin-coreo-app:foo",
+			}}},
+			want: "",
+		},
+		{
+			name: "env on a sibling container is ignored",
+			d: k8s.Deployment{Containers: []k8s.Container{
+				{Name: "sidecar", Image: "envoyproxy/envoy:v1", Env: map[string]string{"MAFIN_URL": "https://wrong"}},
+				{Name: "app", Image: "ghcr.io/finforce/mafin-coreo-app:foo", Env: map[string]string{"MAFIN_URL": "https://right"}},
+			}},
+			want: "https://right",
+		},
+		{
+			name: "no webtop container",
+			d: k8s.Deployment{Containers: []k8s.Container{
+				{Name: "nginx", Image: "nginx", Env: map[string]string{"MAFIN_URL": "x"}},
+			}},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := webtopBackend(tc.d); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsWebtopDeployment(t *testing.T) {
 	cases := []struct {
 		name string

@@ -20,7 +20,10 @@ import (
 // review-apps, staging and any future production deployment all share the
 // same image path, but the names differ (and might be renamed by future CI
 // pipelines without breaking detection).
-const webtopImageRepo = "ghcr.io/finforce/mafin-coreo-app"
+const (
+	webtopImageRepo     = "ghcr.io/finforce/mafin-coreo-app"
+	webtopBackendEnvVar = "MAFIN_URL"
+)
 
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
@@ -30,8 +33,9 @@ func newWebtopCmd() *cobra.Command {
 			"context whose pod template runs the webtop container image (" +
 			webtopImageRepo + "). Identification is image-based, not name-based, " +
 			"so it survives Deployment renames and matches review-apps, staging, " +
-			"and production uniformly. Output is namespace/name, one per line, " +
-			"suitable for piping into other tools.",
+			"and production uniformly. Output is `namespace/name  backend-url` per " +
+			"line, where backend-url is the MAFIN_URL the webtop instance is wired " +
+			"to (or `-` when it isn't set). Easy to pipe into awk/cut.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -52,7 +56,11 @@ func newWebtopCmd() *cobra.Command {
 				if !isWebtopDeployment(d) {
 					continue
 				}
-				fmt.Fprintf(out, "%s/%s\n", d.Namespace, d.Name)
+				backend := webtopBackend(d)
+				if backend == "" {
+					backend = "-"
+				}
+				fmt.Fprintf(out, "%s/%s  %s\n", d.Namespace, d.Name, backend)
 				found++
 			}
 			if found == 0 {
@@ -90,4 +98,18 @@ func isWebtopImage(image string) bool {
 	}
 	return strings.HasPrefix(image, webtopImageRepo+":") ||
 		strings.HasPrefix(image, webtopImageRepo+"@")
+}
+
+// webtopBackend returns the backend URL the webtop instance is wired to,
+// taken from the MAFIN_URL env var on the webtop container. Empty string
+// when the env var isn't set or isn't a literal value (e.g. sourced from
+// a ConfigMap/Secret — we don't resolve those).
+func webtopBackend(d k8s.Deployment) string {
+	for _, c := range d.Containers {
+		if !isWebtopImage(c.Image) {
+			continue
+		}
+		return c.Env[webtopBackendEnvVar]
+	}
+	return ""
 }
