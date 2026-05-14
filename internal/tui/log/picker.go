@@ -18,15 +18,25 @@ const defaultAPITimeout = 15 * time.Second
 // simpleItem is the standard list item used by both pickers.
 type simpleItem struct {
 	title, desc string
+	recent      bool
 }
 
 func (i simpleItem) Title() string       { return i.title }
 func (i simpleItem) Description() string { return i.desc }
 func (i simpleItem) FilterValue() string { return i.title }
 
+// separatorItem is a non-selectable visual divider between the recents zone
+// and the rest of the list. Its FilterValue is empty so it gets filtered out
+// whenever the user types into the filter prompt.
+type separatorItem struct {
+	label string
+}
+
+func (s separatorItem) FilterValue() string { return "" }
+
 // compactDelegate renders a list item on a single line so the picker shows
-// many entries at once. If the item has a description, it's right-aligned
-// on the same row as the title.
+// many entries at once. Recent items get a ★ prefix; the separator renders
+// as a dim horizontal rule.
 type compactDelegate struct{}
 
 func (d compactDelegate) Height() int                         { return 1 }
@@ -38,29 +48,59 @@ var (
 	compactDesc          = lipgloss.NewStyle().Foreground(styles.ColorDim)
 	compactSelectedTitle = lipgloss.NewStyle().Foreground(styles.ColorAccent).Bold(true)
 	compactSelectedDesc  = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
+	compactStar          = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
+	compactSeparator     = lipgloss.NewStyle().Foreground(styles.ColorDim)
 )
 
 func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	it, ok := item.(simpleItem)
-	if !ok {
-		return
-	}
-
-	selected := index == m.Index()
-
-	prefix := "  "
-	titleStyle := compactTitle
-	descStyle := compactDesc
-	if selected {
-		prefix = "▸ "
-		titleStyle = compactSelectedTitle
-		descStyle = compactSelectedDesc
-	}
-
 	width := m.Width()
 	if width <= 0 {
 		width = 80
 	}
+
+	switch it := item.(type) {
+	case separatorItem:
+		fmt.Fprint(w, renderSeparator(width, it.label))
+		return
+	case simpleItem:
+		fmt.Fprint(w, renderSimpleItem(width, it, index == m.Index()))
+		return
+	}
+}
+
+func renderSeparator(width int, label string) string {
+	mid := " " + label + " "
+	if label == "" {
+		mid = ""
+	}
+	line := compactSeparator.Render(strings.Repeat("─", max(width-lipgloss.Width(mid)-2, 4)))
+	if mid == "" {
+		return "  " + line
+	}
+	half := compactSeparator.Render("──")
+	return "  " + half + compactSeparator.Render(mid) + line
+}
+
+func renderSimpleItem(width int, it simpleItem, selected bool) string {
+	titleStyle := compactTitle
+	descStyle := compactDesc
+	if selected {
+		titleStyle = compactSelectedTitle
+		descStyle = compactSelectedDesc
+	}
+
+	var prefix string
+	switch {
+	case selected && it.recent:
+		prefix = compactStar.Render("▸★")
+	case selected:
+		prefix = "▸ "
+	case it.recent:
+		prefix = compactStar.Render(" ★")
+	default:
+		prefix = "  "
+	}
+	prefix += " "
 
 	title := titleStyle.Render(it.title)
 	line := prefix + title
@@ -73,10 +113,39 @@ func (d compactDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		}
 		line += strings.Repeat(" ", gap) + desc
 	}
-
-	fmt.Fprint(w, line)
+	return line
 }
 
 // newPickerDelegate returns the compact one-line-per-item delegate used by
 // both pickers.
 func newPickerDelegate() list.ItemDelegate { return compactDelegate{} }
+
+// buildItemsWithRecents takes the full list of names plus an MRU recents
+// slice and returns a list.Item sequence: recents first (only those still
+// present in `all`, in MRU order), then a separator (if any recents
+// survived), then the remaining names in their original order.
+func buildItemsWithRecents(all, recents []string, descFor func(name string) string) []list.Item {
+	allSet := make(map[string]bool, len(all))
+	for _, n := range all {
+		allSet[n] = true
+	}
+	recentSet := make(map[string]bool, len(recents))
+	out := make([]list.Item, 0, len(all)+1)
+	for _, r := range recents {
+		if !allSet[r] || recentSet[r] {
+			continue
+		}
+		recentSet[r] = true
+		out = append(out, simpleItem{title: r, desc: descFor(r), recent: true})
+	}
+	if len(out) > 0 {
+		out = append(out, separatorItem{label: "more"})
+	}
+	for _, n := range all {
+		if recentSet[n] {
+			continue
+		}
+		out = append(out, simpleItem{title: n, desc: descFor(n)})
+	}
+	return out
+}

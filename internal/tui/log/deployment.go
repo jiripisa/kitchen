@@ -9,12 +9,14 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jiripisa/kitchen/internal/k8s"
+	"github.com/jiripisa/kitchen/internal/recents"
 	"github.com/jiripisa/kitchen/internal/tui/components"
 	"github.com/jiripisa/kitchen/internal/tui/styles"
 )
 
 type deploymentModel struct {
 	client    *k8s.Client
+	recents   *recents.Store
 	namespace string
 
 	width, height int
@@ -26,7 +28,7 @@ type deploymentModel struct {
 	err     error
 }
 
-func newDeploymentModel(client *k8s.Client, namespace string) *deploymentModel {
+func newDeploymentModel(client *k8s.Client, store *recents.Store, namespace string) *deploymentModel {
 	delegate := newPickerDelegate()
 	l := list.New(nil, delegate, 0, 0)
 	l.Title = "Deployments in " + namespace
@@ -40,6 +42,7 @@ func newDeploymentModel(client *k8s.Client, namespace string) *deploymentModel {
 
 	return &deploymentModel{
 		client:    client,
+		recents:   store,
 		namespace: namespace,
 		list:      l,
 		spinner:   sp,
@@ -61,7 +64,8 @@ func (m *deploymentModel) SetSize(w, h int) {
 }
 
 type deploymentsLoadedMsg struct {
-	items []k8s.Deployment
+	items   []k8s.Deployment
+	recents []string
 }
 
 func (m *deploymentModel) loadCmd() tea.Cmd {
@@ -72,20 +76,23 @@ func (m *deploymentModel) loadCmd() tea.Cmd {
 		if err != nil {
 			return loadErrMsg{err: err}
 		}
-		return deploymentsLoadedMsg{items: ds}
+		return deploymentsLoadedMsg{
+			items:   ds,
+			recents: m.recents.Deployments(m.client.Context(), m.namespace),
+		}
 	}
 }
 
 func (m *deploymentModel) Update(msg tea.Msg) (*deploymentModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case deploymentsLoadedMsg:
-		items := make([]list.Item, 0, len(msg.items))
+		names := make([]string, 0, len(msg.items))
+		descByName := make(map[string]string, len(msg.items))
 		for _, d := range msg.items {
-			items = append(items, simpleItem{
-				title: d.Name,
-				desc:  fmt.Sprintf("%d/%d ready", d.Ready, d.Replicas),
-			})
+			names = append(names, d.Name)
+			descByName[d.Name] = fmt.Sprintf("%d/%d ready", d.Ready, d.Replicas)
 		}
+		items := buildItemsWithRecents(names, msg.recents, func(name string) string { return descByName[name] })
 		m.list.SetItems(items)
 		m.loading = false
 		return m, nil
@@ -98,17 +105,28 @@ func (m *deploymentModel) Update(msg tea.Msg) (*deploymentModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
+			if m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied {
+				break
+			}
 			return m, func() tea.Msg { return backMsg{} }
 		case "q", "ctrl+c":
+			if m.list.FilterState() == list.Filtering {
+				break
+			}
 			return m, tea.Quit
 		case "enter":
+			if m.list.FilterState() == list.Filtering {
+				break
+			}
 			if it, ok := m.list.SelectedItem().(simpleItem); ok && it.title != "" {
 				ns := m.namespace
 				name := it.title
+				_ = m.recents.RecordDeployment(m.client.Context(), ns, name)
 				return m, func() tea.Msg {
 					return deploymentSelectedMsg{namespace: ns, deployment: name}
 				}
 			}
+			return m, nil
 		}
 
 	case spinner.TickMsg:
@@ -117,8 +135,10 @@ func (m *deploymentModel) Update(msg tea.Msg) (*deploymentModel, tea.Cmd) {
 		return m, cmd
 	}
 
+	prevIdx := m.list.Index()
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	skipSeparator(&m.list, prevIdx)
 	return m, cmd
 }
 

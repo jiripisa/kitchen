@@ -9,12 +9,14 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jiripisa/kitchen/internal/k8s"
+	"github.com/jiripisa/kitchen/internal/recents"
 	"github.com/jiripisa/kitchen/internal/tui/components"
 	"github.com/jiripisa/kitchen/internal/tui/styles"
 )
 
 type namespaceModel struct {
-	client *k8s.Client
+	client  *k8s.Client
+	recents *recents.Store
 
 	width, height int
 
@@ -25,7 +27,7 @@ type namespaceModel struct {
 	err     error
 }
 
-func newNamespaceModel(client *k8s.Client) *namespaceModel {
+func newNamespaceModel(client *k8s.Client, store *recents.Store) *namespaceModel {
 	delegate := newPickerDelegate()
 	l := list.New(nil, delegate, 0, 0)
 	l.Title = "Namespaces"
@@ -39,6 +41,7 @@ func newNamespaceModel(client *k8s.Client) *namespaceModel {
 
 	return &namespaceModel{
 		client:  client,
+		recents: store,
 		list:    l,
 		spinner: sp,
 		loading: true,
@@ -60,7 +63,8 @@ func (m *namespaceModel) SetSize(w, h int) {
 }
 
 type namespacesLoadedMsg struct {
-	names []string
+	names   []string
+	recents []string
 }
 
 type loadErrMsg struct{ err error }
@@ -73,17 +77,17 @@ func (m *namespaceModel) loadCmd() tea.Cmd {
 		if err != nil {
 			return loadErrMsg{err: err}
 		}
-		return namespacesLoadedMsg{names: ns}
+		return namespacesLoadedMsg{
+			names:   ns,
+			recents: m.recents.Namespaces(m.client.Context()),
+		}
 	}
 }
 
 func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case namespacesLoadedMsg:
-		items := make([]list.Item, 0, len(msg.names))
-		for _, n := range msg.names {
-			items = append(items, simpleItem{title: n})
-		}
+		items := buildItemsWithRecents(msg.names, msg.recents, func(string) string { return "" })
 		m.list.SetItems(items)
 		m.loading = false
 		return m, nil
@@ -96,12 +100,21 @@ func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			// While filtering, let the list handle esc to clear the filter.
+			if m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied {
+				break
+			}
 			return m, func() tea.Msg { return backMsg{} }
 		case "enter":
+			if m.list.FilterState() == list.Filtering {
+				break // let list accept the filter
+			}
 			if it, ok := m.list.SelectedItem().(simpleItem); ok && it.title != "" {
 				selected := it.title
+				_ = m.recents.RecordNamespace(m.client.Context(), selected)
 				return m, func() tea.Msg { return namespaceSelectedMsg(selected) }
 			}
+			return m, nil
 		}
 
 	case spinner.TickMsg:
@@ -110,9 +123,32 @@ func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 		return m, cmd
 	}
 
+	prevIdx := m.list.Index()
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	skipSeparator(&m.list, prevIdx)
 	return m, cmd
+}
+
+// skipSeparator nudges the list cursor past a separatorItem if it landed on
+// one after the last update. Direction is inferred from how the cursor moved.
+func skipSeparator(l *list.Model, prevIdx int) {
+	items := l.Items()
+	if len(items) == 0 {
+		return
+	}
+	idx := l.Index()
+	if _, ok := items[idx].(separatorItem); !ok {
+		return
+	}
+	if idx > prevIdx {
+		l.CursorDown()
+	} else if idx < prevIdx {
+		l.CursorUp()
+	} else {
+		// Same index — happens at startup. Push down (out of recents zone).
+		l.CursorDown()
+	}
 }
 
 func (m *namespaceModel) View() string {

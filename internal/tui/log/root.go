@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jiripisa/kitchen/internal/k8s"
+	"github.com/jiripisa/kitchen/internal/recents"
 )
 
 // screen identifies which sub-model owns the screen.
@@ -18,8 +19,9 @@ const (
 
 // rootModel routes between the three sub-screens and holds shared state.
 type rootModel struct {
-	ctx    context.Context
-	client *k8s.Client
+	ctx     context.Context
+	client  *k8s.Client
+	recents *recents.Store
 
 	current screen
 
@@ -30,12 +32,13 @@ type rootModel struct {
 	width, height int
 }
 
-func newRootModel(ctx context.Context, client *k8s.Client) rootModel {
+func newRootModel(ctx context.Context, client *k8s.Client, store *recents.Store) rootModel {
 	return rootModel{
 		ctx:       ctx,
 		client:    client,
+		recents:   store,
 		current:   screenNamespace,
-		namespace: newNamespaceModel(client),
+		namespace: newNamespaceModel(client, store),
 	}
 }
 
@@ -59,7 +62,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case namespaceSelectedMsg:
-		m.deployment = newDeploymentModel(m.client, string(msg))
+		m.deployment = newDeploymentModel(m.client, m.recents, string(msg))
 		m.deployment.SetSize(m.width, m.height)
 		m.current = screenDeployment
 		return m, m.deployment.Init()

@@ -44,6 +44,24 @@ The TUI reads from the channel inside a `tea.Cmd` and emits a `logLineMsg`
 per line. On `f` toggle we stop sending new lines to the viewport without
 killing the streams.
 
+### Recents
+
+`kitchen log` remembers the last 5 selected namespaces (per kubeconfig
+context) and the last 5 deployments (per context + namespace). State lives in
+`${XDG_STATE_HOME:-~/.local/state}/kitchen/recents.json`, written atomically
+via a `.tmp` + `rename` pair.
+
+Visual approach in the pickers:
+
+- Recents are pinned to the top of the list, marked with `★`.
+- A dim `── more ─────` rule separates the recents zone from the rest.
+- The separator is a non-selectable `separatorItem` — when the cursor would
+  land on it during navigation we nudge it past in the same direction.
+- Filtering hides the separator because its `FilterValue` is empty.
+
+If reading the store fails (corrupt JSON, unreadable disk), the TUI falls
+back to an in-memory store and still works — recents are nice-to-have.
+
 ### Versioning
 
 `version`, `commit`, `date` are package-level `var`s in `internal/version`

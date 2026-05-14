@@ -41,6 +41,11 @@ A three-screen TUI:
    per-pod colour. `f` toggles follow on/off, `g`/`G` jumps to top/bottom,
    `Esc` goes back, `q` quits.
 
+The last 5 selected namespaces and deployments are pinned to the top of the
+picker on subsequent runs (marked with `★`, with a dim rule separating them
+from the rest). Recents are stored per kubeconfig context in
+`~/.local/state/kitchen/recents.json`.
+
 ### Prerequisites
 
 `kitchen log` reads `KUBECONFIG`, falling back to `~/.kube/config`. The
