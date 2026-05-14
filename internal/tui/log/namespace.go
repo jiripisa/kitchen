@@ -98,17 +98,22 @@ func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Type-to-filter: any printable key in the unfiltered state jumps
+		// the user straight into the list's filter input.
+		if shouldStartFiltering(msg, m.list.FilterState()) {
+			return m, startFilteringWith(&m.list, msg)
+		}
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			// While filtering, let the list handle esc to clear the filter.
+		case "esc":
+			// While filtering, let the list clear the filter on esc.
+			// Otherwise esc takes the user back to the previous screen.
 			if m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied {
 				break
 			}
 			return m, func() tea.Msg { return backMsg{} }
+		case "ctrl+c":
+			return m, tea.Quit
 		case "enter":
-			if m.list.FilterState() == list.Filtering {
-				break // let list accept the filter
-			}
 			if it, ok := m.list.SelectedItem().(simpleItem); ok && it.title != "" {
 				selected := it.title
 				_ = m.recents.RecordNamespace(m.client.Context(), selected)
@@ -128,6 +133,26 @@ func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 	m.list, cmd = m.list.Update(msg)
 	skipSeparator(&m.list, prevIdx)
 	return m, cmd
+}
+
+// shouldStartFiltering reports whether a key press should jump the list
+// straight into its filter input. A printable rune typed while the list is
+// unfiltered is the trigger.
+func shouldStartFiltering(msg tea.KeyMsg, state list.FilterState) bool {
+	return state == list.Unfiltered &&
+		msg.Type == tea.KeyRunes &&
+		len(msg.Runes) > 0
+}
+
+// startFilteringWith opens the list's filter and types `msg` into it. We do
+// this by first feeding the list a synthetic "/" (its default filter trigger)
+// and then the original key event.
+func startFilteringWith(l *list.Model, msg tea.KeyMsg) tea.Cmd {
+	openFilter := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}
+	*l, _ = l.Update(openFilter)
+	var cmd tea.Cmd
+	*l, cmd = l.Update(msg)
+	return cmd
 }
 
 // skipSeparator nudges the list cursor past a separatorItem if it landed on
@@ -172,7 +197,7 @@ func (m *namespaceModel) View() string {
 		[]components.StatusItem{
 			{Key: "context", Value: m.client.Context()},
 		},
-		"↑/↓ move · / filter · enter select · q quit",
+		"type to filter · ↑/↓ move · enter select · esc back · ^c quit",
 	))
 	return b.String()
 }

@@ -103,21 +103,18 @@ func (m *deploymentModel) Update(msg tea.Msg) (*deploymentModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if shouldStartFiltering(msg, m.list.FilterState()) {
+			return m, startFilteringWith(&m.list, msg)
+		}
 		switch msg.String() {
 		case "esc":
 			if m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied {
 				break
 			}
 			return m, func() tea.Msg { return backMsg{} }
-		case "q", "ctrl+c":
-			if m.list.FilterState() == list.Filtering {
-				break
-			}
+		case "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if m.list.FilterState() == list.Filtering {
-				break
-			}
 			if it, ok := m.list.SelectedItem().(simpleItem); ok && it.title != "" {
 				ns := m.namespace
 				name := it.title
@@ -169,7 +166,7 @@ func (m *deploymentModel) View() string {
 			{Key: "context", Value: m.client.Context()},
 			{Key: "ns", Value: m.namespace},
 		},
-		"↑/↓ move · / filter · enter select · esc back · q quit",
+		"type to filter · ↑/↓ move · enter select · esc back · ^c quit",
 	))
 	return b.String()
 }
