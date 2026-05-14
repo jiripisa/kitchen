@@ -16,6 +16,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	root.AddCommand(newLogCmd())
+	root.AddCommand(newUpgradeCmd())
 	root.AddCommand(newVersionCmd())
 
 	return root
