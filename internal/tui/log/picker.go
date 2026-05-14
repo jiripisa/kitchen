@@ -29,9 +29,9 @@ func (i simpleItem) FilterValue() string { return i.title }
 // on the same row as the title.
 type compactDelegate struct{}
 
-func (d compactDelegate) Height() int                              { return 1 }
-func (d compactDelegate) Spacing() int                             { return 0 }
-func (d compactDelegate) Update(tea.Msg, *list.Model) tea.Cmd      { return nil }
+func (d compactDelegate) Height() int                         { return 1 }
+func (d compactDelegate) Spacing() int                        { return 0 }
+func (d compactDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
 
 var (
 	compactTitle         = lipgloss.NewStyle().Foreground(styles.ColorText)
