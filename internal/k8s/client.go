@@ -116,6 +116,27 @@ func (c *Client) ListDeployments(ctx context.Context, namespace string) ([]Deplo
 	return out, nil
 }
 
+// ListAllDeployments returns deployments across every namespace the user has
+// list access to, sorted by (namespace, name). client-go treats an empty
+// namespace string as "all namespaces".
+func (c *Client) ListAllDeployments(ctx context.Context) ([]Deployment, error) {
+	list, err := c.cs.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list deployments across all namespaces: %w", err)
+	}
+	out := make([]Deployment, 0, len(list.Items))
+	for _, d := range list.Items {
+		out = append(out, toDeployment(d))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
 func toDeployment(d appsv1.Deployment) Deployment {
 	sel := map[string]string{}
 	if d.Spec.Selector != nil {
