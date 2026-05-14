@@ -1,17 +1,7 @@
-run:
-  timeout: 5m
-  tests: true
+version: "2"
 
 linters:
+  default: standard
   enable:
     - gofmt
-    - govet
-    - ineffassign
     - misspell
-    - staticcheck
-    - unused
-    - errcheck
-
-issues:
-  exclude-dirs:
-    - dist
