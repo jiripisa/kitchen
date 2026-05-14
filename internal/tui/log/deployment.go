@@ -132,7 +132,7 @@ func (m *deploymentModel) View() string {
 		b.WriteString(styles.Error.Render(fmt.Sprintf("error: %v", m.err)))
 		b.WriteByte('\n')
 	case m.loading:
-		b.WriteString(fmt.Sprintf("  %s loading deployments in %q…", m.spinner.View(), m.namespace))
+		fmt.Fprintf(&b, "  %s loading deployments in %q…", m.spinner.View(), m.namespace)
 		b.WriteByte('\n')
 	default:
 		if len(m.list.Items()) == 0 {

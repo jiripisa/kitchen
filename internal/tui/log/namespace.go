@@ -125,7 +125,7 @@ func (m *namespaceModel) View() string {
 		b.WriteString(styles.Error.Render(fmt.Sprintf("error: %v", m.err)))
 		b.WriteByte('\n')
 	case m.loading:
-		b.WriteString(fmt.Sprintf("  %s loading namespaces…", m.spinner.View()))
+		fmt.Fprintf(&b, "  %s loading namespaces…", m.spinner.View())
 		b.WriteByte('\n')
 	default:
 		b.WriteString(m.list.View())

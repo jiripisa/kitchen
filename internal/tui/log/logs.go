@@ -230,7 +230,7 @@ func (m *logsModel) View() string {
 		b.WriteString(styles.Error.Render(fmt.Sprintf("error: %v", m.err)))
 		b.WriteByte('\n')
 	case m.loading:
-		b.WriteString(fmt.Sprintf("  %s opening log streams…", m.spinner.View()))
+		fmt.Fprintf(&b, "  %s opening log streams…", m.spinner.View())
 		b.WriteByte('\n')
 	default:
 		b.WriteString(m.viewport.View())
