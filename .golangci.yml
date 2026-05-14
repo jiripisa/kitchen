@@ -1,0 +1,17 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+    - errcheck
+
+issues:
+  exclude-dirs:
+    - dist

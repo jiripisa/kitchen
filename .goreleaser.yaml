@@ -1,0 +1,53 @@
+version: 2
+
+project_name: kitchen
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kitchen
+    main: ./cmd/kitchen
+    binary: kitchen
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/jiripisa/kitchen/internal/version.Version={{.Version}}
+      - -X github.com/jiripisa/kitchen/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/jiripisa/kitchen/internal/version.Date={{.Date}}
+
+archives:
+  - id: kitchen
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+
+release:
+  draft: false
+  prerelease: auto
