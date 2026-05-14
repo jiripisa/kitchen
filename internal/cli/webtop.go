@@ -30,13 +30,14 @@ const (
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
-		Short: "List all deployments running the webtop application, grouped by backend.",
-		Long: "Lists every Deployment across all namespaces in the current kubeconfig " +
-			"context whose pod template runs the webtop container image (" +
-			webtopImageRepo + "), grouped by the backend URL each instance is wired " +
-			"to (MAFIN_URL env var). Webtops with no backend set are listed last under " +
-			"\"(no backend)\". Identification is image-based, not name-based, so it " +
-			"survives Deployment renames and matches review-apps, staging, and production " +
+		Short: "List all deployments running the webtop application as a backend → webtop table.",
+		Long: "Prints a two-column table mapping each webtop Deployment (across all " +
+			"namespaces in the current kubeconfig context) to the backend URL it's " +
+			"wired to (MAFIN_URL env var). Rows are sorted by backend so instances " +
+			"sharing the same backend sit next to each other; webtops with no backend " +
+			"set sort under \"(no backend)\" at the bottom. Identification is " +
+			"image-based (" + webtopImageRepo + "), not name-based, so it survives " +
+			"Deployment renames and matches review-apps, staging, and production " +
 			"uniformly.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
@@ -71,7 +72,7 @@ func newWebtopCmd() *cobra.Command {
 				return nil
 			}
 
-			renderWebtopGroups(cmd.OutOrStdout(), groupWebtops(entries))
+			renderWebtopTable(cmd.OutOrStdout(), buildWebtopRows(entries))
 			return nil
 		},
 	}
@@ -84,68 +85,78 @@ type webtopEntry struct {
 	Backend   string
 }
 
-// webtopGroup is a backend URL together with every webtop wired to it.
-type webtopGroup struct {
+// webtopRow is the rendered shape: one webtop per row, with the
+// backend URL repeated on each row so the table reads top-to-bottom.
+type webtopRow struct {
 	Backend string
-	Entries []webtopEntry
+	Webtop  string
 }
 
-// groupWebtops buckets entries by backend URL. Buckets are returned in a
-// stable order: backend URLs alphabetically first, the empty backend last
-// (rendered as "(no backend)"). Entries within each bucket are sorted by
-// (namespace, name).
-func groupWebtops(entries []webtopEntry) []webtopGroup {
-	bucket := map[string][]webtopEntry{}
-	for _, e := range entries {
-		bucket[e.Backend] = append(bucket[e.Backend], e)
-	}
+// noBackendLabel is shown in the BACKEND column for webtops where
+// MAFIN_URL isn't a literal value (unset, or sourced from a Secret /
+// ConfigMap we don't resolve).
+const noBackendLabel = "(no backend)"
 
-	keys := make([]string, 0, len(bucket))
-	for k := range bucket {
-		keys = append(keys, k)
+// buildWebtopRows turns entries into table rows, sorted by backend (with
+// the no-backend bucket pinned to the bottom) and then by namespace/name.
+func buildWebtopRows(entries []webtopEntry) []webtopRow {
+	rows := make([]webtopRow, 0, len(entries))
+	for _, e := range entries {
+		backend := e.Backend
+		if backend == "" {
+			backend = noBackendLabel
+		}
+		rows = append(rows, webtopRow{
+			Backend: backend,
+			Webtop:  e.Namespace + "/" + e.Name,
+		})
 	}
-	sort.Slice(keys, func(i, j int) bool {
+	sort.Slice(rows, func(i, j int) bool {
+		ai, bi := rows[i].Backend == noBackendLabel, rows[j].Backend == noBackendLabel
 		switch {
-		case keys[i] == "":
+		case ai && !bi:
 			return false
-		case keys[j] == "":
+		case !ai && bi:
 			return true
+		case rows[i].Backend != rows[j].Backend:
+			return rows[i].Backend < rows[j].Backend
 		default:
-			return keys[i] < keys[j]
+			return rows[i].Webtop < rows[j].Webtop
 		}
 	})
-
-	out := make([]webtopGroup, 0, len(keys))
-	for _, k := range keys {
-		items := bucket[k]
-		sort.Slice(items, func(a, b int) bool {
-			if items[a].Namespace != items[b].Namespace {
-				return items[a].Namespace < items[b].Namespace
-			}
-			return items[a].Name < items[b].Name
-		})
-		out = append(out, webtopGroup{Backend: k, Entries: items})
-	}
-	return out
+	return rows
 }
 
-// renderWebtopGroups prints groups as plain text: backend URL (count),
-// then indented namespace/name children, with a blank line between groups.
-// Format is intentionally human-first; for raw machine-readable output use
-// kubectl directly.
-func renderWebtopGroups(w io.Writer, groups []webtopGroup) {
-	for i, g := range groups {
-		if i > 0 {
-			fmt.Fprintln(w)
+// renderWebtopTable prints rows as a two-column table with an aligned
+// header. Column widths grow to fit the longest value in each column.
+func renderWebtopTable(w io.Writer, rows []webtopRow) {
+	if len(rows) == 0 {
+		return
+	}
+	const (
+		hBackend = "BACKEND"
+		hWebtop  = "WEBTOP"
+		gap      = "  "
+	)
+
+	bWidth, wWidth := len(hBackend), len(hWebtop)
+	for _, r := range rows {
+		if l := len(r.Backend); l > bWidth {
+			bWidth = l
 		}
-		label := g.Backend
-		if label == "" {
-			label = "(no backend)"
+		if l := len(r.Webtop); l > wWidth {
+			wWidth = l
 		}
-		fmt.Fprintf(w, "%s (%d)\n", label, len(g.Entries))
-		for _, e := range g.Entries {
-			fmt.Fprintf(w, "  %s/%s\n", e.Namespace, e.Name)
-		}
+	}
+
+	fmt.Fprintf(w, "%-*s%s%s\n", bWidth, hBackend, gap, hWebtop)
+	fmt.Fprintf(w, "%s%s%s\n",
+		strings.Repeat("-", bWidth),
+		gap,
+		strings.Repeat("-", wWidth),
+	)
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-*s%s%s\n", bWidth, r.Backend, gap, r.Webtop)
 	}
 }
 
