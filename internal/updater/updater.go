@@ -10,8 +10,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,6 +57,12 @@ func Run(ctx context.Context, out io.Writer, opts Options) error {
 	}
 
 	fmt.Fprintf(out, "found a newer release: %s → %s\n", current, latest)
+
+	// Preflight: do we have write access to the install dir? Fail fast
+	// before downloading anything if not.
+	if err := preflightInstallDir(); err != nil {
+		return err
+	}
 
 	archiveAsset, err := pickArchiveAsset(rel.Assets)
 	if err != nil {
@@ -288,6 +296,40 @@ func extractBinary(archivePath string) (string, error) {
 	return "", fmt.Errorf("kitchen binary not found in archive")
 }
 
+// preflightInstallDir checks that we can stage a file in the directory that
+// holds the running binary. Fails fast (before downloading) when the user
+// doesn't have permission, with an actionable error.
+func preflightInstallDir() error {
+	target, err := selfPath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(target)
+	probe, err := os.CreateTemp(dir, ".kitchen-probe-*")
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("cannot write to %s (permission denied) — re-run with sudo:\n  sudo %s upgrade", dir, target)
+		}
+		return fmt.Errorf("cannot write to %s: %w", dir, err)
+	}
+	probeName := probe.Name()
+	probe.Close()
+	os.Remove(probeName)
+	return nil
+}
+
+func selfPath() (string, error) {
+	target, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate self: %w", err)
+	}
+	target, err = filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve self: %w", err)
+	}
+	return target, nil
+}
+
 // replaceSelf atomically replaces the running binary with the file at newPath.
 //
 // On Unix systems, renaming over an executable that is currently running is
@@ -295,19 +337,18 @@ func extractBinary(archivePath string) (string, error) {
 // temp file in the same directory as the target so rename stays atomic
 // across the rename hop.
 func replaceSelf(newPath string) error {
-	target, err := os.Executable()
+	target, err := selfPath()
 	if err != nil {
-		return fmt.Errorf("locate self: %w", err)
-	}
-	target, err = filepath.EvalSymlinks(target)
-	if err != nil {
-		return fmt.Errorf("resolve self: %w", err)
+		return err
 	}
 
 	dir := filepath.Dir(target)
 	staged, err := os.CreateTemp(dir, ".kitchen-update-*")
 	if err != nil {
-		return fmt.Errorf("stage update (need write access to %s): %w", dir, err)
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("cannot write to %s (permission denied) — re-run with sudo:\n  sudo %s upgrade", dir, target)
+		}
+		return fmt.Errorf("stage update in %s: %w", dir, err)
 	}
 	stagedPath := staged.Name()
 	staged.Close()
