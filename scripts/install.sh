@@ -3,6 +3,10 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jiripisa/kitchen/main/scripts/install.sh | sh
+#
+# Installs to ~/.local/bin by default so future `kitchen upgrade` runs need
+# no sudo. Override with the KITCHEN_INSTALL_DIR env var, e.g.:
+#   curl -fsSL .../install.sh | KITCHEN_INSTALL_DIR=/usr/local/bin sh
 
 set -eu
 
@@ -94,20 +98,14 @@ tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "$TMP_DIR"
 [ -f "${TMP_DIR}/${BIN}" ] || err "${BIN} not found in archive"
 chmod +x "${TMP_DIR}/${BIN}"
 
-# Pick install dir: /usr/local/bin if writable (or with sudo), else $HOME/.local/bin.
-INSTALL_DIR="/usr/local/bin"
-USE_SUDO=""
-if [ ! -w "$INSTALL_DIR" ]; then
-    if [ ! -d "$INSTALL_DIR" ] || ! command -v sudo >/dev/null 2>&1; then
-        INSTALL_DIR="${HOME}/.local/bin"
-        mkdir -p "$INSTALL_DIR"
-    else
-        USE_SUDO="sudo"
-    fi
-fi
+# Default to a user-owned dir so `kitchen upgrade` later works without sudo.
+# Override with KITCHEN_INSTALL_DIR=/some/path to pick a different location.
+INSTALL_DIR="${KITCHEN_INSTALL_DIR:-${HOME}/.local/bin}"
+mkdir -p "$INSTALL_DIR" || err "cannot create install dir: ${INSTALL_DIR}"
+[ -w "$INSTALL_DIR" ] || err "install dir ${INSTALL_DIR} is not writable (override with KITCHEN_INSTALL_DIR=...)"
 
-info "installing to ${INSTALL_DIR}/${BIN}${USE_SUDO:+ (with sudo)}"
-$USE_SUDO install -m 0755 "${TMP_DIR}/${BIN}" "${INSTALL_DIR}/${BIN}"
+info "installing to ${INSTALL_DIR}/${BIN}"
+install -m 0755 "${TMP_DIR}/${BIN}" "${INSTALL_DIR}/${BIN}"
 
 ok "installed kitchen ${TAG} to ${INSTALL_DIR}/${BIN}"
 

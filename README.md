@@ -11,8 +11,15 @@ curl -fsSL https://raw.githubusercontent.com/jiripisa/kitchen/main/scripts/insta
 ```
 
 The script detects your OS/arch (linux & darwin, amd64 & arm64), verifies the
-release checksum, and installs to `/usr/local/bin` (using `sudo` if needed),
-falling back to `$HOME/.local/bin` when the system path isn't writable.
+release checksum, and installs to `~/.local/bin` (no sudo needed). This also
+means `kitchen upgrade` always works without sudo. Make sure `~/.local/bin`
+is on your `$PATH` — the installer prints a hint if it isn't.
+
+Want the binary somewhere else (e.g. `/usr/local/bin`)?
+
+```sh
+curl -fsSL .../install.sh | KITCHEN_INSTALL_DIR=/usr/local/bin sh
+```
 
 ## Usage
 
