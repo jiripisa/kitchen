@@ -28,13 +28,18 @@ type deploymentModel struct {
 	err     error
 }
 
+func deploymentTitle(namespace string) string {
+	return "Deployments in " + namespace
+}
+
 func newDeploymentModel(client *k8s.Client, store *recents.Store, namespace string) *deploymentModel {
 	delegate := newPickerDelegate()
 	l := list.New(nil, delegate, 0, 0)
-	l.Title = "Deployments in " + namespace
+	l.Title = deploymentTitle(namespace)
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
+	l.Filter = substringFilter
 	l.Styles.Title = styles.Title
 
 	sp := spinner.New()
@@ -136,6 +141,7 @@ func (m *deploymentModel) Update(msg tea.Msg) (*deploymentModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	skipSeparator(&m.list, prevIdx)
+	syncListTitle(&m.list, deploymentTitle(m.namespace))
 	return m, cmd
 }
 

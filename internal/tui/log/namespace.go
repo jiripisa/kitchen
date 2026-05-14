@@ -14,6 +14,8 @@ import (
 	"github.com/jiripisa/kitchen/internal/tui/styles"
 )
 
+const namespaceTitle = "Namespaces"
+
 type namespaceModel struct {
 	client  *k8s.Client
 	recents *recents.Store
@@ -30,10 +32,11 @@ type namespaceModel struct {
 func newNamespaceModel(client *k8s.Client, store *recents.Store) *namespaceModel {
 	delegate := newPickerDelegate()
 	l := list.New(nil, delegate, 0, 0)
-	l.Title = "Namespaces"
+	l.Title = namespaceTitle
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
+	l.Filter = substringFilter
 	l.Styles.Title = styles.Title
 
 	sp := spinner.New()
@@ -132,6 +135,7 @@ func (m *namespaceModel) Update(msg tea.Msg) (*namespaceModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	skipSeparator(&m.list, prevIdx)
+	syncListTitle(&m.list, namespaceTitle)
 	return m, cmd
 }
 

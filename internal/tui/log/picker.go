@@ -123,6 +123,49 @@ func renderSimpleItem(width int, it simpleItem, selected bool) string {
 // both pickers.
 func newPickerDelegate() list.ItemDelegate { return compactDelegate{} }
 
+// substringFilter is a case-insensitive contains-substring matcher used in
+// place of the list's default fuzzy filter. Fuzzy matched too many false
+// positives for k8s names (e.g. "main" matched "mafin-auth"). With contains
+// matching, the filter behaves predictably: the typed text must appear as a
+// contiguous substring of the item title.
+func substringFilter(term string, targets []string) []list.Rank {
+	if term == "" {
+		return nil
+	}
+	lcTerm := strings.ToLower(term)
+	termLen := len([]rune(lcTerm))
+	out := make([]list.Rank, 0, len(targets))
+	for i, t := range targets {
+		lcTarget := strings.ToLower(t)
+		idx := strings.Index(lcTarget, lcTerm)
+		if idx < 0 {
+			continue
+		}
+		// MatchedIndexes are rune indices, used by the default list
+		// delegate to highlight matched chars. Our custom delegate doesn't
+		// highlight, but we fill them in correctly so future delegates can.
+		startRune := len([]rune(t[:idx]))
+		matched := make([]int, termLen)
+		for j := 0; j < termLen; j++ {
+			matched[j] = startRune + j
+		}
+		out = append(out, list.Rank{Index: i, MatchedIndexes: matched})
+	}
+	return out
+}
+
+// syncListTitle keeps the list's title visible when a filter is applied so
+// the user always knows what's being filtered. In Filtering state (user is
+// actively typing) the list renders "Filter: <input-with-cursor>" itself, so
+// we leave its Title alone there.
+func syncListTitle(l *list.Model, base string) {
+	if l.FilterState() == list.FilterApplied {
+		l.Title = "Filter: " + l.FilterValue()
+	} else if l.FilterState() == list.Unfiltered {
+		l.Title = base
+	}
+}
+
 // buildItemsWithRecents takes the full list of names plus an MRU recents
 // slice and returns a list.Item sequence: recents first (only those still
 // present in `all`, in MRU order), then a separator (if any recents
