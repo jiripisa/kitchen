@@ -174,15 +174,18 @@ type webtopEntry struct {
 const noCoreoLabel = "(no coreo)"
 
 // webtopGroup is one row in the rendered table — all webtops sharing the
-// same coreo backend.
+// same coreo backend. PR refs are kept separately from the URL strings so
+// the renderer can put them in a side column outside the framed table.
 type webtopGroup struct {
-	Coreo      string // pre-rendered coreo cell (URL + optional PR link)
-	WebtopRows []string
+	Coreo     string
+	CoreoPR   *github.PR
+	Webtops   []string // webtop URLs, one per entry
+	WebtopPRs []*github.PR
 }
 
-// groups buckets entries by Backend URL, then renders each cell. Coreo URLs
-// are sorted alphabetically with no-coreo last; webtops within each group
-// are sorted alphabetically by URL.
+// groups buckets entries by Backend URL. Coreo URLs are sorted alphabetically
+// with no-coreo last; webtops within each group are sorted alphabetically by
+// URL.
 func (d *webtopData) groups() []webtopGroup {
 	buckets := map[string][]webtopEntry{}
 	for _, e := range d.entries {
@@ -209,36 +212,37 @@ func (d *webtopData) groups() []webtopGroup {
 		items := buckets[k]
 		sort.Slice(items, func(a, b int) bool { return items[a].URL < items[b].URL })
 
-		// Coreo cell: URL + optional PR. CoreoPR is the same for all
-		// entries in the group, so any one works.
 		coreoLabel := k
 		if coreoLabel == "" {
 			coreoLabel = noCoreoLabel
 		}
-		if pr := items[0].CoreoPR; pr != nil {
-			coreoLabel = coreoLabel + "  " + prLink(*pr)
-		}
 
-		rows := make([]string, 0, len(items))
+		webtops := make([]string, 0, len(items))
+		webtopPRs := make([]*github.PR, 0, len(items))
 		for _, e := range items {
 			cell := e.URL
 			if cell == "" {
 				cell = "-"
 			}
-			if e.WebtopPR != nil {
-				cell = cell + "  " + prLink(*e.WebtopPR)
-			}
-			rows = append(rows, cell)
+			webtops = append(webtops, cell)
+			webtopPRs = append(webtopPRs, e.WebtopPR)
 		}
 
-		out = append(out, webtopGroup{Coreo: coreoLabel, WebtopRows: rows})
+		out = append(out, webtopGroup{
+			Coreo:     coreoLabel,
+			CoreoPR:   items[0].CoreoPR,
+			Webtops:   webtops,
+			WebtopPRs: webtopPRs,
+		})
 	}
 	return out
 }
 
-// renderWebtopTable renders groups as a framed lipgloss table. Each group is
-// one logical row whose WEBTOP cell may span multiple lines (one per
-// webtop sharing that coreo).
+// renderWebtopTable renders groups as a framed lipgloss table for the
+// WEBTOP/COREO columns and then appends a borderless PR column to the right
+// of every data line. The PR column has no header and no frame; PR labels
+// for adjacent rows sit in the same column position so they read as their
+// own visual stack, in a distinct color so they don't blend with the URLs.
 func renderWebtopTable(groups []webtopGroup) string {
 	if len(groups) == 0 {
 		return ""
@@ -253,7 +257,7 @@ func renderWebtopTable(groups []webtopGroup) string {
 
 	rows := make([][]string, 0, len(groups))
 	for _, g := range groups {
-		rows = append(rows, []string{strings.Join(g.WebtopRows, "\n"), g.Coreo})
+		rows = append(rows, []string{strings.Join(g.Webtops, "\n"), g.Coreo})
 	}
 
 	t := table.New().
@@ -269,14 +273,81 @@ func renderWebtopTable(groups []webtopGroup) string {
 		}).
 		Rows(rows...)
 
-	return t.Render()
+	return appendPRColumn(t.Render(), groups)
 }
 
-// prLink builds an OSC 8 hyperlink — modern terminals render "PR #123" as
-// clickable text taking the user to the PR. Terminals that don't understand
-// OSC 8 just print the visible label.
+// appendPRColumn walks the rendered table line-by-line and appends PR text
+// to body lines. Header, separators and outer borders are left untouched.
+//
+// Body-line layout with lipgloss.NormalBorder() and BorderRow(true) is
+// deterministic:
+//
+//	row 0  ┌─┬─┐               top border
+//	row 1  │ WEBTOP │ COREO │  header
+//	row 2  ├─┼─┤               header / body separator
+//	... for each group:
+//	         one line per webtop URL (cell rows)
+//	         then ├─┼─┤ separator (unless last group)
+//	last   └─┴─┘               bottom border
+func appendPRColumn(tableStr string, groups []webtopGroup) string {
+	lines := strings.Split(tableStr, "\n")
+	out := make([]string, 0, len(lines))
+
+	li := 0
+	// Top border, header, header-body separator.
+	for i := 0; i < 3 && li < len(lines); i, li = i+1, li+1 {
+		out = append(out, lines[li])
+	}
+
+	for gi, g := range groups {
+		for wi := range g.Webtops {
+			if li >= len(lines) {
+				break
+			}
+			out = append(out, lines[li]+prSuffix(g, wi))
+			li++
+		}
+		// Group separator (skipped after the last group).
+		if gi < len(groups)-1 && li < len(lines) {
+			out = append(out, lines[li])
+			li++
+		}
+	}
+	// Bottom border (and any trailing blank line the renderer emitted).
+	for li < len(lines) {
+		out = append(out, lines[li])
+		li++
+	}
+	return strings.Join(out, "\n")
+}
+
+// prSuffix renders the PR labels (webtop, then coreo) for a given body line.
+// Empty string when no PR applies — the line is left as-is so PR labels on
+// adjacent lines stay column-aligned, but lines without PRs don't carry any
+// trailing space.
+func prSuffix(g webtopGroup, wi int) string {
+	var parts []string
+	if wi < len(g.WebtopPRs) && g.WebtopPRs[wi] != nil {
+		parts = append(parts, prLink(*g.WebtopPRs[wi]))
+	}
+	if wi == 0 && g.CoreoPR != nil {
+		parts = append(parts, prLink(*g.CoreoPR))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, "  ")
+}
+
+// prLinkStyle gives the PR labels a distinct color so they don't blend with
+// the table content (which uses the terminal's default foreground).
+var prLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
+
+// prLink builds an OSC 8 hyperlink wrapped in a color escape — modern
+// terminals render the styled "PR #123" as clickable text taking the user
+// to the PR. Terminals that don't understand OSC 8 just print the label.
 func prLink(pr github.PR) string {
-	label := fmt.Sprintf("PR #%d", pr.Number)
+	label := prLinkStyle.Render(fmt.Sprintf("PR #%d", pr.Number))
 	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", pr.URL, label)
 }
 
