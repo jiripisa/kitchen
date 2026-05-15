@@ -10,9 +10,10 @@ import (
 
 func TestBuildWebtopRows(t *testing.T) {
 	in := []webtopEntry{
-		// out of order on purpose
+		// out of order on purpose; entries with the same coreo are sorted
+		// alphabetically by webtop URL.
 		{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main", URL: "https://b.dev"},
-		{Namespace: "mafin", Name: "no-backend", Backend: "", URL: ""},
+		{Namespace: "mafin", Name: "no-coreo", Backend: "", URL: ""},
 		{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main", URL: "https://a.dev"},
 		{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1", URL: "https://feat.dev"},
 		{Namespace: "other", Name: "shared", Backend: "https://coreo.main", URL: "https://shared.dev"},
@@ -20,11 +21,11 @@ func TestBuildWebtopRows(t *testing.T) {
 	got := buildWebtopRows(in)
 
 	want := []webtopRow{
-		{Backend: "https://coreo-feat-1", Webtop: "mafin/feat-app", URL: "https://feat.dev"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-a", URL: "https://a.dev"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-b", URL: "https://b.dev"},
-		{Backend: "https://coreo.main", Webtop: "other/shared", URL: "https://shared.dev"},
-		{Backend: "(no backend)", Webtop: "mafin/no-backend", URL: "-"},
+		{Coreo: "https://coreo-feat-1", Webtop: "https://feat.dev"},
+		{Coreo: "https://coreo.main", Webtop: "https://a.dev"},
+		{Coreo: "https://coreo.main", Webtop: "https://b.dev"},
+		{Coreo: "https://coreo.main", Webtop: "https://shared.dev"},
+		{Coreo: "(no coreo)", Webtop: "-"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildWebtopRows mismatch:\ngot:  %+v\nwant: %+v", got, want)
@@ -33,23 +34,22 @@ func TestBuildWebtopRows(t *testing.T) {
 
 func TestRenderWebtopTable(t *testing.T) {
 	rows := []webtopRow{
-		{Backend: "https://coreo.main", Webtop: "mafin/app-a", URL: "https://a.dev"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-b", URL: "https://b.dev"},
-		{Backend: "(no backend)", Webtop: "mafin/orphan", URL: "-"},
+		{Coreo: "https://coreo.main", Webtop: "https://a.dev"},
+		{Coreo: "https://coreo.main", Webtop: "https://b.dev"},
+		{Coreo: "(no coreo)", Webtop: "-"},
 	}
 	var buf bytes.Buffer
 	renderWebtopTable(&buf, rows)
 
 	// Column widths:
-	//   BACKEND = max(len("BACKEND")=7, len("https://coreo.main")=18) = 18
-	//   WEBTOP  = max(len("WEBTOP")=6,  len("mafin/orphan")=12)        = 12
-	//   URL     = max(len("URL")=3,     len("https://a.dev")=13)       = 13
+	//   COREO  = max(len("COREO")=5,  len("https://coreo.main")=18) = 18
+	//   WEBTOP = max(len("WEBTOP")=6, len("https://a.dev")=13)      = 13
 	want := "" +
-		"BACKEND             WEBTOP        URL\n" +
-		"------------------  ------------  -------------\n" +
-		"https://coreo.main  mafin/app-a   https://a.dev\n" +
-		"https://coreo.main  mafin/app-b   https://b.dev\n" +
-		"(no backend)        mafin/orphan  -\n"
+		"COREO               WEBTOP\n" +
+		"------------------  -------------\n" +
+		"https://coreo.main  https://a.dev\n" +
+		"https://coreo.main  https://b.dev\n" +
+		"(no coreo)          -\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("render mismatch:\ngot:\n%q\nwant:\n%q", got, want)
 	}

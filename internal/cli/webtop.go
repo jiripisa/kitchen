@@ -30,16 +30,15 @@ const (
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
-		Short: "List webtop deployments as a backend / webtop / url table.",
-		Long: "Prints a three-column table mapping each webtop Deployment (across " +
-			"all namespaces in the current kubeconfig context) to the backend URL it's " +
-			"wired to (MAFIN_URL env var) and the URL it serves to users (taken from " +
-			"the Ingress that fronts the deployment's Service). Rows are sorted by " +
-			"backend so instances sharing the same backend sit next to each other; " +
-			"webtops with no backend set sort under \"(no backend)\" at the bottom. " +
-			"Identification is image-based (" + webtopImageRepo + "), not name-based, " +
-			"so it survives Deployment renames and matches review-apps, staging, and " +
-			"production uniformly.",
+		Short: "List webtops as a coreo → webtop URL table.",
+		Long: "Prints a two-column table mapping each coreo backend (taken from the " +
+			"MAFIN_URL env var on the webtop pod) to the URL where the webtop is " +
+			"served (taken from the Ingress that fronts the deployment's Service). " +
+			"Rows are sorted by coreo so webtops sharing the same coreo sit next to " +
+			"each other; webtops with no coreo set sort under \"(no coreo)\" at the " +
+			"bottom. Identification is image-based (" + webtopImageRepo + "), not " +
+			"name-based, so it survives Deployment renames and matches review-apps, " +
+			"staging, and production uniformly.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -55,9 +54,9 @@ func newWebtopCmd() *cobra.Command {
 			}
 			ingresses, err := client.ListAllIngresses(ctx)
 			if err != nil {
-				// Non-fatal: we can still show backend + name without URLs.
+				// Non-fatal: we can still show the coreo column without URLs.
 				fmt.Fprintf(cmd.ErrOrStderr(),
-					"warning: could not list ingresses (%v); URL column will be empty\n", err)
+					"warning: could not list ingresses (%v); webtop URL column will be empty\n", err)
 				ingresses = nil
 			}
 			urls := buildIngressURLIndex(ingresses)
@@ -117,47 +116,45 @@ type webtopEntry struct {
 	URL       string
 }
 
-// webtopRow is the rendered shape: one webtop per row, with the
-// backend URL repeated on each row so the table reads top-to-bottom.
+// webtopRow is the rendered shape: one webtop per row, with the coreo URL
+// repeated on each row so the table reads top-to-bottom.
 type webtopRow struct {
-	Backend string
-	Webtop  string
-	URL     string
+	Coreo  string
+	Webtop string
 }
 
-// noBackendLabel is shown in the BACKEND column for webtops where
-// MAFIN_URL isn't a literal value (unset, or sourced from a Secret /
-// ConfigMap we don't resolve).
-const noBackendLabel = "(no backend)"
+// noCoreoLabel is shown in the COREO column for webtops where MAFIN_URL
+// isn't a literal value (unset, or sourced from a Secret / ConfigMap we
+// don't resolve).
+const noCoreoLabel = "(no coreo)"
 
-// buildWebtopRows turns entries into table rows, sorted by backend (with
-// the no-backend bucket pinned to the bottom) and then by namespace/name.
+// buildWebtopRows turns entries into table rows, sorted by coreo (with the
+// no-coreo bucket pinned to the bottom) and then by webtop URL.
 func buildWebtopRows(entries []webtopEntry) []webtopRow {
 	rows := make([]webtopRow, 0, len(entries))
 	for _, e := range entries {
-		backend := e.Backend
-		if backend == "" {
-			backend = noBackendLabel
+		coreo := e.Backend
+		if coreo == "" {
+			coreo = noCoreoLabel
 		}
-		url := e.URL
-		if url == "" {
-			url = "-"
+		webtop := e.URL
+		if webtop == "" {
+			webtop = "-"
 		}
 		rows = append(rows, webtopRow{
-			Backend: backend,
-			Webtop:  e.Namespace + "/" + e.Name,
-			URL:     url,
+			Coreo:  coreo,
+			Webtop: webtop,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		ai, bi := rows[i].Backend == noBackendLabel, rows[j].Backend == noBackendLabel
+		ai, bi := rows[i].Coreo == noCoreoLabel, rows[j].Coreo == noCoreoLabel
 		switch {
 		case ai && !bi:
 			return false
 		case !ai && bi:
 			return true
-		case rows[i].Backend != rows[j].Backend:
-			return rows[i].Backend < rows[j].Backend
+		case rows[i].Coreo != rows[j].Coreo:
+			return rows[i].Coreo < rows[j].Coreo
 		default:
 			return rows[i].Webtop < rows[j].Webtop
 		}
@@ -165,48 +162,37 @@ func buildWebtopRows(entries []webtopEntry) []webtopRow {
 	return rows
 }
 
-// renderWebtopTable prints rows as a three-column table with an aligned
-// header. Column widths grow to fit the longest value in each column.
+// renderWebtopTable prints rows as a two-column COREO/WEBTOP table with an
+// aligned header. Column widths grow to fit the longest value in each
+// column.
 func renderWebtopTable(w io.Writer, rows []webtopRow) {
 	if len(rows) == 0 {
 		return
 	}
 	const (
-		hBackend = "BACKEND"
-		hWebtop  = "WEBTOP"
-		hURL     = "URL"
-		gap      = "  "
+		hCoreo  = "COREO"
+		hWebtop = "WEBTOP"
+		gap     = "  "
 	)
 
-	bWidth, wWidth, uWidth := len(hBackend), len(hWebtop), len(hURL)
+	cWidth, wWidth := len(hCoreo), len(hWebtop)
 	for _, r := range rows {
-		if l := len(r.Backend); l > bWidth {
-			bWidth = l
+		if l := len(r.Coreo); l > cWidth {
+			cWidth = l
 		}
 		if l := len(r.Webtop); l > wWidth {
 			wWidth = l
 		}
-		if l := len(r.URL); l > uWidth {
-			uWidth = l
-		}
 	}
 
-	fmt.Fprintf(w, "%-*s%s%-*s%s%s\n",
-		bWidth, hBackend, gap,
-		wWidth, hWebtop, gap,
-		hURL,
-	)
-	fmt.Fprintf(w, "%s%s%s%s%s\n",
-		strings.Repeat("-", bWidth), gap,
-		strings.Repeat("-", wWidth), gap,
-		strings.Repeat("-", uWidth),
+	fmt.Fprintf(w, "%-*s%s%s\n", cWidth, hCoreo, gap, hWebtop)
+	fmt.Fprintf(w, "%s%s%s\n",
+		strings.Repeat("-", cWidth),
+		gap,
+		strings.Repeat("-", wWidth),
 	)
 	for _, r := range rows {
-		fmt.Fprintf(w, "%-*s%s%-*s%s%s\n",
-			bWidth, r.Backend, gap,
-			wWidth, r.Webtop, gap,
-			r.URL,
-		)
+		fmt.Fprintf(w, "%-*s%s%s\n", cWidth, r.Coreo, gap, r.Webtop)
 	}
 }
 
