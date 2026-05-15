@@ -21,6 +21,7 @@ import (
 // Image and env-var conventions are documented in docs/upstream-pipelines.md.
 const (
 	webtopImageRepo     = "ghcr.io/finforce/mafin-coreo-app"
+	coreoImageRepo      = "ghcr.io/finforce/mafin-coreo"
 	webtopBackendEnvVar = "MAFIN_URL"
 
 	webtopRepoOwner = "finforce"
@@ -29,20 +30,25 @@ const (
 	coreoRepoName   = "mafin-coreo"
 
 	webtopDeployNamePrefix = "mafin-coreo-app-"
+	coreoDeployNamePrefix  = "mafin-coreo-"
 	coreoIngressHostPrefix = "coreo-"
 	mafinHostSuffix        = ".mafin.finforce.dev"
+
+	// mafinNamespace is where both webtop and coreo are deployed in this
+	// cluster; both apps' k8s.yml hard-code it in the Service / Ingress.
+	mafinNamespace = "mafin"
 )
 
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
 		Short: "Show webtop deployments and the coreo backend each talks to.",
-		Long: "Renders a framed two-column table — WEBTOP on the left (the URL " +
-			"the webtop is served at), COREO on the right (the URL of the coreo " +
-			"backend it talks to, from MAFIN_URL on the pod). Rows are grouped " +
-			"by coreo with separators between groups, and each coreo URL appears " +
-			"only once. When a deployment came from a pull request (slug matches " +
-			"an open PR in the upstream repo), a clickable PR link is appended.",
+		Long: "Renders a framed two-column table — WEBTOP on the left (URL " +
+			"served by the ingress), COREO on the right (URL of the coreo backend " +
+			"the webtop talks to, from MAFIN_URL). Rows are grouped by coreo with " +
+			"separators between groups, and each coreo URL appears only once. " +
+			"Under each URL kitchen prints, when available, a clickable PR link " +
+			"and a clickable GitHub link to the image tag that's actually deployed.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -122,6 +128,7 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 	}
 
 	urls := buildIngressURLIndex(ingresses)
+	coreoTags := buildCoreoTagIndex(deps)
 
 	entries := make([]webtopEntry, 0, len(deps))
 	for _, d := range deps {
@@ -133,6 +140,7 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 			Name:      d.Name,
 			Backend:   webtopBackend(d),
 			URL:       urls[d.Namespace+"/"+d.Name],
+			WebtopTag: webtopImageTag(d),
 		}
 		if pr, ok := webtopPRs[webtopSlugFromName(d.Name)]; ok {
 			e.WebtopPR = &pr
@@ -140,10 +148,89 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 		if pr, ok := coreoPRs[coreoSlugFromURL(e.Backend)]; ok {
 			e.CoreoPR = &pr
 		}
+		e.CoreoTag = coreoTags[coreoDeploymentKeyForURL(e.Backend)]
 		entries = append(entries, e)
 	}
 
 	return &webtopData{entries: entries}, nil
+}
+
+// buildCoreoTagIndex picks the image tag off every coreo deployment in
+// `deps` and returns a map keyed by "<namespace>/<deployment-name>".
+func buildCoreoTagIndex(deps []k8s.Deployment) map[string]string {
+	out := map[string]string{}
+	for _, d := range deps {
+		for _, c := range d.Containers {
+			if !isCoreoImage(c.Image) {
+				continue
+			}
+			out[d.Namespace+"/"+d.Name] = imageTag(c.Image)
+			break
+		}
+	}
+	return out
+}
+
+// coreoDeploymentKeyForURL returns the "<namespace>/<deployment-name>" key
+// for the coreo deployment that serves a given coreo URL, using the
+// project convention that:
+//   - the URL is https://coreo-<SLUG>.mafin.finforce.dev
+//   - the corresponding Deployment is `mafin-coreo-<SLUG>` in the `mafin`
+//     namespace (or plain `mafin-coreo` when there's no slug, i.e. staging)
+func coreoDeploymentKeyForURL(coreoURL string) string {
+	if coreoURL == "" {
+		return ""
+	}
+	slug := coreoSlugFromURL(coreoURL)
+	if slug == "" {
+		return mafinNamespace + "/" + strings.TrimSuffix(coreoDeployNamePrefix, "-")
+	}
+	return mafinNamespace + "/" + coreoDeployNamePrefix + slug
+}
+
+// isCoreoImage mirrors isWebtopImage for the backend repo.
+func isCoreoImage(image string) bool {
+	if image == coreoImageRepo {
+		return true
+	}
+	return strings.HasPrefix(image, coreoImageRepo+":") ||
+		strings.HasPrefix(image, coreoImageRepo+"@")
+}
+
+// webtopImageTag returns the tag of the first webtop container in d, or "".
+func webtopImageTag(d k8s.Deployment) string {
+	for _, c := range d.Containers {
+		if isWebtopImage(c.Image) {
+			return imageTag(c.Image)
+		}
+	}
+	return ""
+}
+
+// imageTag extracts the tag from "<repo>:<tag>" or the digest from
+// "<repo>@<digest>". Returns "" for a bare repo (implicit :latest).
+func imageTag(image string) string {
+	if i := strings.LastIndex(image, "@"); i > 0 {
+		return image[i+1:] // sha256:...
+	}
+	if i := strings.LastIndex(image, ":"); i > 0 {
+		// Guard against a port like "ghcr.io:443" — the colon must be after the last "/".
+		if slash := strings.LastIndex(image, "/"); slash > i {
+			return ""
+		}
+		return image[i+1:]
+	}
+	return ""
+}
+
+// githubRefURL returns a clickable URL for a tag/branch/version ref. Empty
+// for unsupported refs (digest pinning) where we can't map back to a git
+// commit.
+func githubRefURL(owner, repo, ref string) string {
+	if ref == "" || strings.HasPrefix(ref, "sha256:") {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/tree/%s", owner, repo, ref)
 }
 
 // buildIngressURLIndex returns a map from "<namespace>/<service-name>" to
@@ -166,6 +253,8 @@ type webtopEntry struct {
 	Name      string
 	Backend   string     // coreo URL the webtop talks to (MAFIN_URL)
 	URL       string     // webtop URL (from ingress)
+	WebtopTag string     // image tag the webtop is running
+	CoreoTag  string     // image tag the matched coreo deployment is running
 	WebtopPR  *github.PR // PR that spawned this webtop deployment, if any
 	CoreoPR   *github.PR // PR that spawned the coreo backend, if any
 }
@@ -174,18 +263,16 @@ type webtopEntry struct {
 const noCoreoLabel = "(no coreo)"
 
 // webtopGroup is one row in the rendered table — all webtops sharing the
-// same coreo backend. PR refs are kept separately from the URL strings so
-// the renderer can put them in a side column outside the framed table.
+// same coreo backend. Each cell value is a pre-rendered string that may
+// span multiple lines (URL on the first line; PR + tag refs underneath).
 type webtopGroup struct {
-	Coreo     string
-	CoreoPR   *github.PR
-	Webtops   []string // webtop URLs, one per entry
-	WebtopPRs []*github.PR
+	Coreo   string   // multi-line coreo cell content
+	Webtops []string // each entry: multi-line webtop cell content
 }
 
-// groups buckets entries by Backend URL. Coreo URLs are sorted alphabetically
-// with no-coreo last; webtops within each group are sorted alphabetically by
-// URL.
+// groups buckets entries by Backend URL and renders each cell. Coreo URLs
+// are sorted alphabetically with no-coreo last; webtops within each group
+// are sorted alphabetically by URL.
 func (d *webtopData) groups() []webtopGroup {
 	buckets := map[string][]webtopEntry{}
 	for _, e := range d.entries {
@@ -216,33 +303,54 @@ func (d *webtopData) groups() []webtopGroup {
 		if coreoLabel == "" {
 			coreoLabel = noCoreoLabel
 		}
+		// Coreo cell: URL line + optional metadata line. CoreoPR and
+		// CoreoTag are the same for every entry in this group.
+		coreoCell := renderCell(coreoLabel, items[0].CoreoPR,
+			items[0].CoreoTag, coreoRepoOwner, coreoRepoName)
 
 		webtops := make([]string, 0, len(items))
-		webtopPRs := make([]*github.PR, 0, len(items))
 		for _, e := range items {
-			cell := e.URL
-			if cell == "" {
-				cell = "-"
+			url := e.URL
+			if url == "" {
+				url = "-"
 			}
-			webtops = append(webtops, cell)
-			webtopPRs = append(webtopPRs, e.WebtopPR)
+			webtops = append(webtops, renderCell(url, e.WebtopPR,
+				e.WebtopTag, webtopRepoOwner, webtopRepoName))
 		}
 
 		out = append(out, webtopGroup{
-			Coreo:     coreoLabel,
-			CoreoPR:   items[0].CoreoPR,
-			Webtops:   webtops,
-			WebtopPRs: webtopPRs,
+			Coreo:   coreoCell,
+			Webtops: webtops,
 		})
 	}
 	return out
 }
 
-// renderWebtopTable renders groups as a framed lipgloss table for the
-// WEBTOP/COREO columns and then appends a borderless PR column to the right
-// of every data line. The PR column has no header and no frame; PR labels
-// for adjacent rows sit in the same column position so they read as their
-// own visual stack, in a distinct color so they don't blend with the URLs.
+// renderCell builds the multi-line content of one cell:
+//
+//	<url-or-label>
+//	  <PR>  <tag>     <- only if either is set
+//
+// PR and tag labels are styled and OSC 8 hyperlinked when a URL is
+// available. The indent makes the metadata line read as "belongs to the
+// URL above" rather than as a separate row.
+func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName string) string {
+	var meta []string
+	if pr != nil {
+		meta = append(meta, prLink(*pr))
+	}
+	if tag != "" {
+		meta = append(meta, tagLink(tag, githubRefURL(repoOwner, repoName, tag)))
+	}
+	if len(meta) == 0 {
+		return urlOrLabel
+	}
+	return urlOrLabel + "\n  " + strings.Join(meta, "  ")
+}
+
+// renderWebtopTable renders groups as a framed lipgloss table. Each cell
+// content is already multi-line (URL plus an indented metadata line); the
+// table just frames it and draws separators between coreo groups.
 func renderWebtopTable(groups []webtopGroup) string {
 	if len(groups) == 0 {
 		return ""
@@ -273,82 +381,32 @@ func renderWebtopTable(groups []webtopGroup) string {
 		}).
 		Rows(rows...)
 
-	return appendPRColumn(t.Render(), groups)
+	return t.Render()
 }
 
-// appendPRColumn walks the rendered table line-by-line and appends PR text
-// to body lines. Header, separators and outer borders are left untouched.
-//
-// Body-line layout with lipgloss.NormalBorder() and BorderRow(true) is
-// deterministic:
-//
-//	row 0  ┌─┬─┐               top border
-//	row 1  │ WEBTOP │ COREO │  header
-//	row 2  ├─┼─┤               header / body separator
-//	... for each group:
-//	         one line per webtop URL (cell rows)
-//	         then ├─┼─┤ separator (unless last group)
-//	last   └─┴─┘               bottom border
-func appendPRColumn(tableStr string, groups []webtopGroup) string {
-	lines := strings.Split(tableStr, "\n")
-	out := make([]string, 0, len(lines))
+var (
+	prLinkStyle  = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
+	tagLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorWarn)
+)
 
-	li := 0
-	// Top border, header, header-body separator.
-	for i := 0; i < 3 && li < len(lines); i, li = i+1, li+1 {
-		out = append(out, lines[li])
-	}
-
-	for gi, g := range groups {
-		for wi := range g.Webtops {
-			if li >= len(lines) {
-				break
-			}
-			out = append(out, lines[li]+prSuffix(g, wi))
-			li++
-		}
-		// Group separator (skipped after the last group).
-		if gi < len(groups)-1 && li < len(lines) {
-			out = append(out, lines[li])
-			li++
-		}
-	}
-	// Bottom border (and any trailing blank line the renderer emitted).
-	for li < len(lines) {
-		out = append(out, lines[li])
-		li++
-	}
-	return strings.Join(out, "\n")
-}
-
-// prSuffix renders the PR labels (webtop, then coreo) for a given body line.
-// Empty string when no PR applies — the line is left as-is so PR labels on
-// adjacent lines stay column-aligned, but lines without PRs don't carry any
-// trailing space.
-func prSuffix(g webtopGroup, wi int) string {
-	var parts []string
-	if wi < len(g.WebtopPRs) && g.WebtopPRs[wi] != nil {
-		parts = append(parts, prLink(*g.WebtopPRs[wi]))
-	}
-	if wi == 0 && g.CoreoPR != nil {
-		parts = append(parts, prLink(*g.CoreoPR))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "  " + strings.Join(parts, "  ")
-}
-
-// prLinkStyle gives the PR labels a distinct color so they don't blend with
-// the table content (which uses the terminal's default foreground).
-var prLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
-
-// prLink builds an OSC 8 hyperlink wrapped in a color escape — modern
-// terminals render the styled "PR #123" as clickable text taking the user
-// to the PR. Terminals that don't understand OSC 8 just print the label.
+// prLink renders "PR #123" as an OSC 8 hyperlink in the accent-2 color.
+// Modern terminals show clickable text; older ones just print the label.
 func prLink(pr github.PR) string {
-	label := prLinkStyle.Render(fmt.Sprintf("PR #%d", pr.Number))
-	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", pr.URL, label)
+	return hyperlink(pr.URL, prLinkStyle.Render(fmt.Sprintf("PR #%d", pr.Number)))
+}
+
+// tagLink renders the image tag as a clickable GitHub ref link in warn
+// color. Empty URL ⇒ no hyperlink, just the colored label.
+func tagLink(label, url string) string {
+	styled := tagLinkStyle.Render(label)
+	if url == "" {
+		return styled
+	}
+	return hyperlink(url, styled)
+}
+
+func hyperlink(url, body string) string {
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", url, body)
 }
 
 // isWebtopDeployment reports whether a Deployment has at least one container
