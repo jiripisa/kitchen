@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/yaml"
 )
 
 // client-go has very conservative default rate limits (QPS=5, Burst=10)
@@ -147,6 +148,24 @@ func (c *Client) ListDeployments(ctx context.Context, namespace string) ([]Deplo
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// GetDeploymentYAML fetches a Deployment and returns it as a YAML document.
+// Server-side noise (managedFields) is stripped, and the TypeMeta is
+// repopulated so the output reads like a `kubectl get -o yaml`.
+func (c *Client) GetDeploymentYAML(ctx context.Context, namespace, name string) (string, error) {
+	dep, err := c.cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get deployment %s/%s: %w", namespace, name, err)
+	}
+	dep.TypeMeta.APIVersion = "apps/v1"
+	dep.TypeMeta.Kind = "Deployment"
+	dep.ManagedFields = nil
+	b, err := yaml.Marshal(dep)
+	if err != nil {
+		return "", fmt.Errorf("marshal deployment yaml: %w", err)
+	}
+	return string(b), nil
 }
 
 // ListAllDeployments returns deployments across every namespace the user has

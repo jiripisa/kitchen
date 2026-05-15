@@ -1,12 +1,10 @@
-package cli
+package webtop
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/jiripisa/kitchen/internal/github"
 	"github.com/jiripisa/kitchen/internal/k8s"
 )
 
@@ -160,74 +158,6 @@ func TestCoreoSlugFromURL(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestWebtopDataGroups exercises the grouping + cell-rendering shape. Each
-// cell is multi-line (URL plus optional indented metadata) so the assertions
-// look for substrings rather than equality.
-func TestWebtopDataGroups(t *testing.T) {
-	webtopPR1 := &github.PR{Number: 1, URL: "https://github.com/x/webtop/pull/1"}
-	coreoPR7 := &github.PR{Number: 7, URL: "https://github.com/x/coreo/pull/7"}
-
-	d := &webtopData{
-		entries: []webtopEntry{
-			{Namespace: "mafin", Name: "mafin-coreo-app-a", Backend: "https://coreo.main",
-				URL: "https://webtop-a.dev", WebtopTag: "branch-a", WebtopPR: webtopPR1},
-			{Namespace: "mafin", Name: "mafin-coreo-app-b", Backend: "https://coreo.main",
-				URL: "https://webtop-b.dev", WebtopTag: "branch-b"},
-			{Namespace: "mafin", Name: "mafin-coreo-app-feat", Backend: "https://coreo-feat.dev",
-				URL: "https://webtop-feat.dev", CoreoTag: "1.2.3", CoreoPR: coreoPR7},
-			{Namespace: "mafin", Name: "mafin-coreo-app-broken", Backend: "", URL: ""},
-		},
-	}
-	groups := d.groups()
-
-	if got, want := len(groups), 3; got != want {
-		t.Fatalf("got %d groups, want %d", got, want)
-	}
-
-	// Group 0: coreo-feat. Coreo cell carries PR #7 + tag 1.2.3 on a
-	// second line; the single webtop has no metadata.
-	if !strings.HasPrefix(groups[0].Coreo, "https://coreo-feat.dev\n") {
-		t.Fatalf("groups[0].Coreo first line: %q", firstLine(groups[0].Coreo))
-	}
-	if !strings.Contains(groups[0].Coreo, "PR #7") || !strings.Contains(groups[0].Coreo, "1.2.3") {
-		t.Fatalf("groups[0].Coreo metadata: %q", groups[0].Coreo)
-	}
-	if groups[0].Webtops[0] != "https://webtop-feat.dev" {
-		t.Fatalf("groups[0].Webtops[0] = %q", groups[0].Webtops[0])
-	}
-
-	// Group 1: coreo.main — two webtops. First carries PR #1 + branch-a;
-	// second carries branch-b only.
-	if groups[1].Coreo != "https://coreo.main" {
-		t.Fatalf("groups[1].Coreo = %q", groups[1].Coreo)
-	}
-	if !strings.Contains(groups[1].Webtops[0], "PR #1") ||
-		!strings.Contains(groups[1].Webtops[0], "branch-a") {
-		t.Fatalf("groups[1].Webtops[0] = %q", groups[1].Webtops[0])
-	}
-	if strings.Contains(groups[1].Webtops[1], "PR #") {
-		t.Fatalf("groups[1].Webtops[1] should not carry a PR: %q", groups[1].Webtops[1])
-	}
-	if !strings.Contains(groups[1].Webtops[1], "branch-b") {
-		t.Fatalf("groups[1].Webtops[1] missing tag: %q", groups[1].Webtops[1])
-	}
-
-	// Group 2: no coreo at the bottom; webtop is "-" with no metadata.
-	if groups[2].Coreo != noCoreoLabel {
-		t.Fatalf("groups[2].Coreo = %q", groups[2].Coreo)
-	}
-	if groups[2].Webtops[0] != "-" {
-		t.Fatalf("groups[2].Webtops[0] = %q", groups[2].Webtops[0])
-	}
-}
-
-func firstLine(s string) string {
-	if i := strings.Index(s, "\n"); i >= 0 {
-		return s[:i]
-	}
-	return s
 }
 
 func TestHumanDuration(t *testing.T) {
