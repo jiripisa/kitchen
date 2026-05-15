@@ -34,6 +34,7 @@ func TestBuildWebtopRows(t *testing.T) {
 
 func TestRenderWebtopTable(t *testing.T) {
 	rows := []webtopRow{
+		{Coreo: "https://coreo.feat", Webtop: "https://feat.dev"},
 		{Coreo: "https://coreo.main", Webtop: "https://a.dev"},
 		{Coreo: "https://coreo.main", Webtop: "https://b.dev"},
 		{Coreo: "(no coreo)", Webtop: "-"},
@@ -42,14 +43,18 @@ func TestRenderWebtopTable(t *testing.T) {
 	renderWebtopTable(&buf, rows)
 
 	// Column widths:
+	//   WEBTOP = max(len("WEBTOP")=6, len("https://feat.dev")=16) = 16
 	//   COREO  = max(len("COREO")=5,  len("https://coreo.main")=18) = 18
-	//   WEBTOP = max(len("WEBTOP")=6, len("https://a.dev")=13)      = 13
+	//
+	// Note: the COREO column is blank on the continuation row (a.dev → b.dev
+	// share the same coreo).
 	want := "" +
-		"COREO               WEBTOP\n" +
-		"------------------  -------------\n" +
-		"https://coreo.main  https://a.dev\n" +
-		"https://coreo.main  https://b.dev\n" +
-		"(no coreo)          -\n"
+		"WEBTOP            COREO\n" +
+		"----------------  ------------------\n" +
+		"https://feat.dev  https://coreo.feat\n" +
+		"https://a.dev     https://coreo.main\n" +
+		"https://b.dev\n" +
+		"-                 (no coreo)\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("render mismatch:\ngot:\n%q\nwant:\n%q", got, want)
 	}

@@ -30,15 +30,17 @@ const (
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
-		Short: "List webtops as a coreo → webtop URL table.",
-		Long: "Prints a two-column table mapping each coreo backend (taken from the " +
-			"MAFIN_URL env var on the webtop pod) to the URL where the webtop is " +
-			"served (taken from the Ingress that fronts the deployment's Service). " +
-			"Rows are sorted by coreo so webtops sharing the same coreo sit next to " +
-			"each other; webtops with no coreo set sort under \"(no coreo)\" at the " +
-			"bottom. Identification is image-based (" + webtopImageRepo + "), not " +
-			"name-based, so it survives Deployment renames and matches review-apps, " +
-			"staging, and production uniformly.",
+		Short: "List webtops as a webtop → coreo URL table.",
+		Long: "Prints a two-column table — WEBTOP on the left (the URL where the " +
+			"webtop is served, from its Ingress), COREO on the right (the URL of the " +
+			"coreo backend the webtop talks to, from MAFIN_URL on the pod). Rows are " +
+			"sorted by COREO so webtops sharing the same coreo sit next to each " +
+			"other; on those continuation rows the COREO cell is left blank — each " +
+			"coreo URL is printed only once at the top of its group. Webtops with no " +
+			"MAFIN_URL set sort under \"(no coreo)\" at the bottom. Identification " +
+			"is image-based (" + webtopImageRepo + "), not name-based, so it " +
+			"survives Deployment renames and matches review-apps, staging, and " +
+			"production uniformly.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -162,37 +164,49 @@ func buildWebtopRows(entries []webtopEntry) []webtopRow {
 	return rows
 }
 
-// renderWebtopTable prints rows as a two-column COREO/WEBTOP table with an
-// aligned header. Column widths grow to fit the longest value in each
-// column.
+// renderWebtopTable prints rows as a two-column WEBTOP/COREO table with an
+// aligned header. Rows are expected to be pre-sorted by Coreo (so identical
+// values are adjacent); the renderer shows each Coreo URL only on the first
+// row of its group and leaves the cell blank on continuation rows — the
+// visual grouping comes for free, no separators or blank lines needed.
 func renderWebtopTable(w io.Writer, rows []webtopRow) {
 	if len(rows) == 0 {
 		return
 	}
 	const (
-		hCoreo  = "COREO"
 		hWebtop = "WEBTOP"
+		hCoreo  = "COREO"
 		gap     = "  "
 	)
 
-	cWidth, wWidth := len(hCoreo), len(hWebtop)
+	wWidth, cWidth := len(hWebtop), len(hCoreo)
 	for _, r := range rows {
-		if l := len(r.Coreo); l > cWidth {
-			cWidth = l
-		}
 		if l := len(r.Webtop); l > wWidth {
 			wWidth = l
 		}
+		if l := len(r.Coreo); l > cWidth {
+			cWidth = l
+		}
 	}
 
-	fmt.Fprintf(w, "%-*s%s%s\n", cWidth, hCoreo, gap, hWebtop)
+	fmt.Fprintf(w, "%-*s%s%s\n", wWidth, hWebtop, gap, hCoreo)
 	fmt.Fprintf(w, "%s%s%s\n",
-		strings.Repeat("-", cWidth),
-		gap,
 		strings.Repeat("-", wWidth),
+		gap,
+		strings.Repeat("-", cWidth),
 	)
-	for _, r := range rows {
-		fmt.Fprintf(w, "%-*s%s%s\n", cWidth, r.Coreo, gap, r.Webtop)
+
+	prevCoreo := ""
+	for i, r := range rows {
+		if i > 0 && r.Coreo == prevCoreo {
+			// Continuation row — no COREO printed, also no need to pad the
+			// WEBTOP column to the full width (we'd just emit trailing
+			// whitespace before the newline).
+			fmt.Fprintf(w, "%s\n", r.Webtop)
+			continue
+		}
+		prevCoreo = r.Coreo
+		fmt.Fprintf(w, "%-*s%s%s\n", wWidth, r.Webtop, gap, r.Coreo)
 	}
 }
 
