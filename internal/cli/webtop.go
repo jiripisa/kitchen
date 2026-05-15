@@ -129,6 +129,7 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 
 	urls := buildIngressURLIndex(ingresses)
 	coreoTags := buildCoreoTagIndex(deps)
+	lastLogs := fetchLastLogTimes(ctx, client, deps)
 
 	entries := make([]webtopEntry, 0, len(deps))
 	for _, d := range deps {
@@ -136,11 +137,12 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 			continue
 		}
 		e := webtopEntry{
-			Namespace: d.Namespace,
-			Name:      d.Name,
-			Backend:   webtopBackend(d),
-			URL:       urls[d.Namespace+"/"+d.Name],
-			WebtopTag: webtopImageTag(d),
+			Namespace:     d.Namespace,
+			Name:          d.Name,
+			Backend:       webtopBackend(d),
+			URL:           urls[d.Namespace+"/"+d.Name],
+			WebtopTag:     webtopImageTag(d),
+			WebtopLastLog: lastLogs[d.Namespace+"/"+d.Name],
 		}
 		if pr, ok := webtopPRs[webtopSlugFromName(d.Name)]; ok {
 			e.WebtopPR = &pr
@@ -148,11 +150,65 @@ func fetchWebtopData(ctx context.Context, stderr io.Writer, client *k8s.Client) 
 		if pr, ok := coreoPRs[coreoSlugFromURL(e.Backend)]; ok {
 			e.CoreoPR = &pr
 		}
-		e.CoreoTag = coreoTags[coreoDeploymentKeyForURL(e.Backend)]
+		coreoKey := coreoDeploymentKeyForURL(e.Backend)
+		e.CoreoTag = coreoTags[coreoKey]
+		e.CoreoLastLog = lastLogs[coreoKey]
 		entries = append(entries, e)
 	}
 
 	return &webtopData{entries: entries}, nil
+}
+
+// fetchLastLogTimes asks every webtop and coreo deployment in `deps` for the
+// timestamp of its most recent log line, in parallel. Returns a map keyed
+// by "<namespace>/<deployment-name>". Failures or empty logs map to a zero
+// time.Time — callers should check IsZero().
+func fetchLastLogTimes(ctx context.Context, client *k8s.Client, deps []k8s.Deployment) map[string]time.Time {
+	type result struct {
+		key string
+		t   time.Time
+	}
+
+	relevant := make([]k8s.Deployment, 0, len(deps))
+	for _, d := range deps {
+		if isWebtopDeployment(d) || isCoreoDeployment(d) {
+			relevant = append(relevant, d)
+		}
+	}
+
+	results := make(chan result, len(relevant))
+	var wg sync.WaitGroup
+	for _, d := range relevant {
+		wg.Add(1)
+		go func(ns, name string) {
+			defer wg.Done()
+			// Per-call timeout so one slow pod doesn't stall the whole table.
+			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			t, _ := client.LastLogTimeForDeployment(rctx, ns, name)
+			results <- result{key: ns + "/" + name, t: t}
+		}(d.Namespace, d.Name)
+	}
+	go func() { wg.Wait(); close(results) }()
+
+	out := map[string]time.Time{}
+	for r := range results {
+		if !r.t.IsZero() {
+			out[r.key] = r.t
+		}
+	}
+	return out
+}
+
+// isCoreoDeployment reports whether a Deployment has at least one container
+// running the coreo image.
+func isCoreoDeployment(d k8s.Deployment) bool {
+	for _, c := range d.Containers {
+		if isCoreoImage(c.Image) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCoreoTagIndex picks the image tag off every coreo deployment in
@@ -257,6 +313,11 @@ type webtopEntry struct {
 	CoreoTag  string     // image tag the matched coreo deployment is running
 	WebtopPR  *github.PR // PR that spawned this webtop deployment, if any
 	CoreoPR   *github.PR // PR that spawned the coreo backend, if any
+
+	// Timestamps of the most recent log line in the first pod of each
+	// deployment. Zero ⇒ unknown / not yet logged / fetch failed.
+	WebtopLastLog time.Time
+	CoreoLastLog  time.Time
 }
 
 // noCoreoLabel is shown when MAFIN_URL isn't set on the webtop pod.
@@ -308,7 +369,8 @@ func (d *webtopData) groups() []webtopGroup {
 		// Coreo cell: URL line + optional metadata line. CoreoPR and
 		// CoreoTag are the same for every entry in this group.
 		coreoCell := renderCell(coreoLabel, items[0].CoreoPR,
-			items[0].CoreoTag, coreoRepoOwner, coreoRepoName, prPad)
+			items[0].CoreoTag, items[0].CoreoLastLog,
+			coreoRepoOwner, coreoRepoName, prPad)
 
 		webtops := make([]string, 0, len(items))
 		for _, e := range items {
@@ -317,7 +379,8 @@ func (d *webtopData) groups() []webtopGroup {
 				url = "-"
 			}
 			webtops = append(webtops, renderCell(url, e.WebtopPR,
-				e.WebtopTag, webtopRepoOwner, webtopRepoName, prPad))
+				e.WebtopTag, e.WebtopLastLog,
+				webtopRepoOwner, webtopRepoName, prPad))
 		}
 
 		out = append(out, webtopGroup{
@@ -362,30 +425,27 @@ func (d *webtopData) prLabelWidth() int {
 // instead link to tree/<PR.HeadRef> (the actual branch name) while keeping
 // the slug as the visible label, since the slug is what's literally
 // deployed in the cluster.
-func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName string, prPad int) string {
-	if pr == nil && tag == "" {
+func renderCell(urlOrLabel string, pr *github.PR, tag string, lastLog time.Time, repoOwner, repoName string, prPad int) string {
+	if pr == nil && tag == "" && lastLog.IsZero() {
 		return urlOrLabel
 	}
 
 	var b strings.Builder
 	b.WriteString("  ")
 
+	// PR column (or its placeholder, so the tag column still aligns).
 	switch {
 	case pr != nil:
 		label := fmt.Sprintf("PR #%d", pr.Number)
 		b.WriteString(hyperlink(pr.URL, prLinkStyle.Render(label)))
-		if tag != "" {
-			// Pad to align the tag column.
-			if pad := prPad - len(label); pad > 0 {
-				b.WriteString(strings.Repeat(" ", pad))
-			}
+		if (tag != "" || !lastLog.IsZero()) && prPad > len(label) {
+			b.WriteString(strings.Repeat(" ", prPad-len(label)))
 		}
-	case tag != "" && prPad > 0:
-		// No PR on this row, but the table has a PR column elsewhere — fill
-		// the slot with spaces so the tag column still aligns.
+	case prPad > 0 && (tag != "" || !lastLog.IsZero()):
 		b.WriteString(strings.Repeat(" ", prPad))
 	}
 
+	// Tag column.
 	if tag != "" {
 		if pr != nil || prPad > 0 {
 			b.WriteString("  ")
@@ -397,7 +457,35 @@ func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName strin
 		b.WriteString(tagLink(tag, githubRefURL(repoOwner, repoName, ref)))
 	}
 
+	// Log-age column. No vertical alignment for this one — the tag width
+	// varies wildly and forcing alignment would waste lots of horizontal
+	// space.
+	if !lastLog.IsZero() {
+		if pr != nil || tag != "" || prPad > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(lastLogStyle.Render(humanDuration(time.Since(lastLog))))
+	}
+
 	return urlOrLabel + "\n" + b.String()
+}
+
+// humanDuration formats a duration as "5s" / "3m" / "2h" / "4d". Keeps the
+// label short so it doesn't dominate the row.
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // renderWebtopTable renders groups as a framed lipgloss table. Each cell
@@ -439,6 +527,7 @@ func renderWebtopTable(groups []webtopGroup) string {
 var (
 	prLinkStyle  = lipgloss.NewStyle().Foreground(styles.ColorMutedAccent)
 	tagLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorMutedWarn)
+	lastLogStyle = lipgloss.NewStyle().Foreground(styles.ColorDim)
 )
 
 // tagLink renders the image tag as a clickable GitHub ref link in warn

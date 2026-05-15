@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -14,6 +16,56 @@ import (
 type LogLine struct {
 	Pod  string
 	Line string
+}
+
+// LastLogTimeForPod returns the timestamp of the most recent log line
+// emitted by the named pod, or a zero time when the pod hasn't logged
+// anything yet (or the read fails).
+func (c *Client) LastLogTimeForPod(ctx context.Context, namespace, pod string) (time.Time, error) {
+	tail := int64(1)
+	opts := &corev1.PodLogOptions{
+		TailLines:  &tail,
+		Timestamps: true,
+	}
+	rc, err := c.cs.CoreV1().Pods(namespace).GetLogs(pod, opts).Stream(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("open log stream for %s: %w", pod, err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read log for %s: %w", pod, err)
+	}
+	line := strings.TrimRight(string(data), "\n\r")
+	if line == "" {
+		return time.Time{}, nil // pod hasn't logged anything yet
+	}
+	// With Timestamps:true, every line starts with an RFC3339Nano timestamp
+	// followed by a single space and the original message.
+	ts, _, ok := strings.Cut(line, " ")
+	if !ok {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse log timestamp %q: %w", ts, err)
+	}
+	return t, nil
+}
+
+// LastLogTimeForDeployment picks the first pod of a deployment and returns
+// its last log line's timestamp. Zero time when the deployment has no pods
+// or the pod hasn't logged anything yet.
+func (c *Client) LastLogTimeForDeployment(ctx context.Context, namespace, name string) (time.Time, error) {
+	pods, err := c.ListPodsForDeployment(ctx, namespace, name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(pods) == 0 {
+		return time.Time{}, nil
+	}
+	return c.LastLogTimeForPod(ctx, namespace, pods[0])
 }
 
 // LogStream fans logs from every pod of a deployment into a single channel.

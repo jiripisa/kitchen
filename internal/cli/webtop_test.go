@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jiripisa/kitchen/internal/github"
 	"github.com/jiripisa/kitchen/internal/k8s"
@@ -227,6 +228,28 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+func TestHumanDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{-time.Hour, "0s"}, // clock skew shouldn't produce a negative duration
+		{45 * time.Second, "45s"},
+		{75 * time.Second, "1m"},
+		{2*time.Hour + 30*time.Minute, "2h"},
+		{36 * time.Hour, "1d"},
+		{8 * 24 * time.Hour, "8d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			if got := humanDuration(tc.d); got != tc.want {
+				t.Fatalf("humanDuration(%v) = %q, want %q", tc.d, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestImageTag(t *testing.T) {
