@@ -520,8 +520,17 @@ func isHTTP(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
+// hyperlink wraps body in an OSC 8 hyperlink envelope. We use the canonical
+// `OSC 8 ; ; URI BEL` form (matching `charmbracelet/x/ansi.SetHyperlink`) —
+// the alternative `ESC \` (ST) terminator is technically also valid but some
+// terminals (notably some VTE/GNOME builds) only recognise links reliably
+// when terminated with BEL, especially when several adjacent links share a
+// line.
 func hyperlink(url, body string) string {
-	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", url, body)
+	if url == "" {
+		return body
+	}
+	return "\x1b]8;;" + url + "\x07" + body + "\x1b]8;;\x07"
 }
 
 // --- filter / typing helpers --------------------------------------------------
