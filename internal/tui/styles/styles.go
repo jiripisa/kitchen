@@ -18,6 +18,11 @@ var (
 	ColorOK      = lipgloss.Color("#9ece6a")
 	ColorWarn    = lipgloss.Color("#e0af68")
 	ColorErr     = lipgloss.Color("#f7768e")
+
+	// Muted variants for secondary/metadata text that shouldn't compete
+	// with primary content for attention.
+	ColorMutedAccent = lipgloss.Color("#9077c4") // muted purple
+	ColorMutedWarn   = lipgloss.Color("#b08858") // muted amber
 )
 
 // PodPalette is a rotating colour set used to tint per-pod log line prefixes.

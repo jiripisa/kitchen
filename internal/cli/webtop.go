@@ -294,6 +294,8 @@ func (d *webtopData) groups() []webtopGroup {
 		}
 	})
 
+	prPad := d.prLabelWidth()
+
 	out := make([]webtopGroup, 0, len(keys))
 	for _, k := range keys {
 		items := buckets[k]
@@ -306,7 +308,7 @@ func (d *webtopData) groups() []webtopGroup {
 		// Coreo cell: URL line + optional metadata line. CoreoPR and
 		// CoreoTag are the same for every entry in this group.
 		coreoCell := renderCell(coreoLabel, items[0].CoreoPR,
-			items[0].CoreoTag, coreoRepoOwner, coreoRepoName)
+			items[0].CoreoTag, coreoRepoOwner, coreoRepoName, prPad)
 
 		webtops := make([]string, 0, len(items))
 		for _, e := range items {
@@ -315,7 +317,7 @@ func (d *webtopData) groups() []webtopGroup {
 				url = "-"
 			}
 			webtops = append(webtops, renderCell(url, e.WebtopPR,
-				e.WebtopTag, webtopRepoOwner, webtopRepoName))
+				e.WebtopTag, webtopRepoOwner, webtopRepoName, prPad))
 		}
 
 		out = append(out, webtopGroup{
@@ -326,36 +328,76 @@ func (d *webtopData) groups() []webtopGroup {
 	return out
 }
 
+// prLabelWidth returns the width of the longest "PR #NNN" label across all
+// entries, so we can pad every PR slot to the same width and have the tag
+// column line up under itself.
+func (d *webtopData) prLabelWidth() int {
+	max := 0
+	consider := func(pr *github.PR) {
+		if pr == nil {
+			return
+		}
+		if w := len(fmt.Sprintf("PR #%d", pr.Number)); w > max {
+			max = w
+		}
+	}
+	for _, e := range d.entries {
+		consider(e.WebtopPR)
+		consider(e.CoreoPR)
+	}
+	return max
+}
+
 // renderCell builds the multi-line content of one cell:
 //
 //	<url-or-label>
-//	  <PR>  <tag>     <- only if either is set
+//	  <PR padded to prPad>  <tag>     <- only if PR and/or tag is set
 //
-// PR and tag labels are styled and OSC 8 hyperlinked when a URL is
-// available. The indent makes the metadata line read as "belongs to the
-// URL above" rather than as a separate row.
+// The PR slot is padded to `prPad` width across every row so the tag
+// column lines up vertically. Rows with no PR (but with a tag, when at
+// least one other row has a PR) fill the slot with spaces.
 //
 // For PR-backed deployments the image tag is the EFFECTIVE_SLUG of the
 // branch, not a real git ref — GitHub returns 404 for tree/<slug>. We
 // instead link to tree/<PR.HeadRef> (the actual branch name) while keeping
 // the slug as the visible label, since the slug is what's literally
 // deployed in the cluster.
-func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName string) string {
-	var meta []string
-	if pr != nil {
-		meta = append(meta, prLink(*pr))
+func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName string, prPad int) string {
+	if pr == nil && tag == "" {
+		return urlOrLabel
 	}
+
+	var b strings.Builder
+	b.WriteString("  ")
+
+	switch {
+	case pr != nil:
+		label := fmt.Sprintf("PR #%d", pr.Number)
+		b.WriteString(hyperlink(pr.URL, prLinkStyle.Render(label)))
+		if tag != "" {
+			// Pad to align the tag column.
+			if pad := prPad - len(label); pad > 0 {
+				b.WriteString(strings.Repeat(" ", pad))
+			}
+		}
+	case tag != "" && prPad > 0:
+		// No PR on this row, but the table has a PR column elsewhere — fill
+		// the slot with spaces so the tag column still aligns.
+		b.WriteString(strings.Repeat(" ", prPad))
+	}
+
 	if tag != "" {
+		if pr != nil || prPad > 0 {
+			b.WriteString("  ")
+		}
 		ref := tag
 		if pr != nil && pr.HeadRef != "" {
 			ref = pr.HeadRef
 		}
-		meta = append(meta, tagLink(tag, githubRefURL(repoOwner, repoName, ref)))
+		b.WriteString(tagLink(tag, githubRefURL(repoOwner, repoName, ref)))
 	}
-	if len(meta) == 0 {
-		return urlOrLabel
-	}
-	return urlOrLabel + "\n  " + strings.Join(meta, "  ")
+
+	return urlOrLabel + "\n" + b.String()
 }
 
 // renderWebtopTable renders groups as a framed lipgloss table. Each cell
@@ -395,8 +437,8 @@ func renderWebtopTable(groups []webtopGroup) string {
 }
 
 var (
-	prLinkStyle  = lipgloss.NewStyle().Foreground(styles.ColorAccent2)
-	tagLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorWarn)
+	prLinkStyle  = lipgloss.NewStyle().Foreground(styles.ColorMutedAccent)
+	tagLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorMutedWarn)
 )
 
 // prLink renders "PR #123" as an OSC 8 hyperlink in the accent-2 color.
