@@ -11,20 +11,20 @@ import (
 func TestBuildWebtopRows(t *testing.T) {
 	in := []webtopEntry{
 		// out of order on purpose
-		{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main"},
-		{Namespace: "mafin", Name: "no-backend", Backend: ""},
-		{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main"},
-		{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1"},
-		{Namespace: "other", Name: "shared", Backend: "https://coreo.main"},
+		{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main", URL: "https://b.dev"},
+		{Namespace: "mafin", Name: "no-backend", Backend: "", URL: ""},
+		{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main", URL: "https://a.dev"},
+		{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1", URL: "https://feat.dev"},
+		{Namespace: "other", Name: "shared", Backend: "https://coreo.main", URL: "https://shared.dev"},
 	}
 	got := buildWebtopRows(in)
 
 	want := []webtopRow{
-		{Backend: "https://coreo-feat-1", Webtop: "mafin/feat-app"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-a"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-b"},
-		{Backend: "https://coreo.main", Webtop: "other/shared"},
-		{Backend: "(no backend)", Webtop: "mafin/no-backend"},
+		{Backend: "https://coreo-feat-1", Webtop: "mafin/feat-app", URL: "https://feat.dev"},
+		{Backend: "https://coreo.main", Webtop: "mafin/app-a", URL: "https://a.dev"},
+		{Backend: "https://coreo.main", Webtop: "mafin/app-b", URL: "https://b.dev"},
+		{Backend: "https://coreo.main", Webtop: "other/shared", URL: "https://shared.dev"},
+		{Backend: "(no backend)", Webtop: "mafin/no-backend", URL: "-"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildWebtopRows mismatch:\ngot:  %+v\nwant: %+v", got, want)
@@ -33,23 +33,41 @@ func TestBuildWebtopRows(t *testing.T) {
 
 func TestRenderWebtopTable(t *testing.T) {
 	rows := []webtopRow{
-		{Backend: "https://coreo.main", Webtop: "mafin/app-a"},
-		{Backend: "https://coreo.main", Webtop: "mafin/app-b"},
-		{Backend: "(no backend)", Webtop: "mafin/orphan"},
+		{Backend: "https://coreo.main", Webtop: "mafin/app-a", URL: "https://a.dev"},
+		{Backend: "https://coreo.main", Webtop: "mafin/app-b", URL: "https://b.dev"},
+		{Backend: "(no backend)", Webtop: "mafin/orphan", URL: "-"},
 	}
 	var buf bytes.Buffer
 	renderWebtopTable(&buf, rows)
 
-	// Column widths: BACKEND = max(len("BACKEND")=7, len("https://coreo.main")=18) = 18
-	//                WEBTOP  = max(len("WEBTOP")=6, len("mafin/orphan")=12) = 12
+	// Column widths:
+	//   BACKEND = max(len("BACKEND")=7, len("https://coreo.main")=18) = 18
+	//   WEBTOP  = max(len("WEBTOP")=6,  len("mafin/orphan")=12)        = 12
+	//   URL     = max(len("URL")=3,     len("https://a.dev")=13)       = 13
 	want := "" +
-		"BACKEND             WEBTOP\n" +
-		"------------------  ------------\n" +
-		"https://coreo.main  mafin/app-a\n" +
-		"https://coreo.main  mafin/app-b\n" +
-		"(no backend)        mafin/orphan\n"
+		"BACKEND             WEBTOP        URL\n" +
+		"------------------  ------------  -------------\n" +
+		"https://coreo.main  mafin/app-a   https://a.dev\n" +
+		"https://coreo.main  mafin/app-b   https://b.dev\n" +
+		"(no backend)        mafin/orphan  -\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("render mismatch:\ngot:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestBuildIngressURLIndex(t *testing.T) {
+	endpoints := []k8s.IngressEndpoint{
+		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "webtop-main.mafin.finforce.dev"},
+		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "duplicate.host.dev"}, // ignored (first wins)
+		{Namespace: "other", ServiceName: "mafin-coreo-app-main", Host: "other-main.dev"},     // different ns
+	}
+	got := buildIngressURLIndex(endpoints)
+	want := map[string]string{
+		"mafin/mafin-coreo-app-main": "https://webtop-main.mafin.finforce.dev",
+		"other/mafin-coreo-app-main": "https://other-main.dev",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildIngressURLIndex mismatch:\ngot:  %v\nwant: %v", got, want)
 	}
 }
 

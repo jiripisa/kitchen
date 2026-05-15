@@ -30,15 +30,16 @@ const (
 func newWebtopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "webtop",
-		Short: "List all deployments running the webtop application as a backend → webtop table.",
-		Long: "Prints a two-column table mapping each webtop Deployment (across all " +
-			"namespaces in the current kubeconfig context) to the backend URL it's " +
-			"wired to (MAFIN_URL env var). Rows are sorted by backend so instances " +
-			"sharing the same backend sit next to each other; webtops with no backend " +
-			"set sort under \"(no backend)\" at the bottom. Identification is " +
-			"image-based (" + webtopImageRepo + "), not name-based, so it survives " +
-			"Deployment renames and matches review-apps, staging, and production " +
-			"uniformly.",
+		Short: "List webtop deployments as a backend / webtop / url table.",
+		Long: "Prints a three-column table mapping each webtop Deployment (across " +
+			"all namespaces in the current kubeconfig context) to the backend URL it's " +
+			"wired to (MAFIN_URL env var) and the URL it serves to users (taken from " +
+			"the Ingress that fronts the deployment's Service). Rows are sorted by " +
+			"backend so instances sharing the same backend sit next to each other; " +
+			"webtops with no backend set sort under \"(no backend)\" at the bottom. " +
+			"Identification is image-based (" + webtopImageRepo + "), not name-based, " +
+			"so it survives Deployment renames and matches review-apps, staging, and " +
+			"production uniformly.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := k8s.NewClient()
 			if err != nil {
@@ -52,6 +53,14 @@ func newWebtopCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ingresses, err := client.ListAllIngresses(ctx)
+			if err != nil {
+				// Non-fatal: we can still show backend + name without URLs.
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: could not list ingresses (%v); URL column will be empty\n", err)
+				ingresses = nil
+			}
+			urls := buildIngressURLIndex(ingresses)
 
 			entries := make([]webtopEntry, 0, len(deps))
 			for _, d := range deps {
@@ -62,6 +71,7 @@ func newWebtopCmd() *cobra.Command {
 					Namespace: d.Namespace,
 					Name:      d.Name,
 					Backend:   webtopBackend(d),
+					URL:       urls[d.Namespace+"/"+d.Name],
 				})
 			}
 
@@ -78,11 +88,33 @@ func newWebtopCmd() *cobra.Command {
 	}
 }
 
+// buildIngressURLIndex returns a map from "<namespace>/<service-name>" to
+// "https://<host>". We use the webtop convention that Deployment name equals
+// Service name equals Ingress backend service name, so a lookup by the
+// Deployment's "namespace/name" key resolves to the serving URL.
+//
+// If multiple ingresses point at the same service, the first one wins —
+// deterministic enough for the standard one-service-one-ingress webtop
+// layout, and not worth a multi-host comma-joined column for the edge
+// case.
+func buildIngressURLIndex(endpoints []k8s.IngressEndpoint) map[string]string {
+	out := make(map[string]string, len(endpoints))
+	for _, e := range endpoints {
+		key := e.Namespace + "/" + e.ServiceName
+		if _, exists := out[key]; exists {
+			continue
+		}
+		out[key] = "https://" + e.Host
+	}
+	return out
+}
+
 // webtopEntry is one row in the cross-namespace webtop listing.
 type webtopEntry struct {
 	Namespace string
 	Name      string
 	Backend   string
+	URL       string
 }
 
 // webtopRow is the rendered shape: one webtop per row, with the
@@ -90,6 +122,7 @@ type webtopEntry struct {
 type webtopRow struct {
 	Backend string
 	Webtop  string
+	URL     string
 }
 
 // noBackendLabel is shown in the BACKEND column for webtops where
@@ -106,9 +139,14 @@ func buildWebtopRows(entries []webtopEntry) []webtopRow {
 		if backend == "" {
 			backend = noBackendLabel
 		}
+		url := e.URL
+		if url == "" {
+			url = "-"
+		}
 		rows = append(rows, webtopRow{
 			Backend: backend,
 			Webtop:  e.Namespace + "/" + e.Name,
+			URL:     url,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -127,7 +165,7 @@ func buildWebtopRows(entries []webtopEntry) []webtopRow {
 	return rows
 }
 
-// renderWebtopTable prints rows as a two-column table with an aligned
+// renderWebtopTable prints rows as a three-column table with an aligned
 // header. Column widths grow to fit the longest value in each column.
 func renderWebtopTable(w io.Writer, rows []webtopRow) {
 	if len(rows) == 0 {
@@ -136,10 +174,11 @@ func renderWebtopTable(w io.Writer, rows []webtopRow) {
 	const (
 		hBackend = "BACKEND"
 		hWebtop  = "WEBTOP"
+		hURL     = "URL"
 		gap      = "  "
 	)
 
-	bWidth, wWidth := len(hBackend), len(hWebtop)
+	bWidth, wWidth, uWidth := len(hBackend), len(hWebtop), len(hURL)
 	for _, r := range rows {
 		if l := len(r.Backend); l > bWidth {
 			bWidth = l
@@ -147,16 +186,27 @@ func renderWebtopTable(w io.Writer, rows []webtopRow) {
 		if l := len(r.Webtop); l > wWidth {
 			wWidth = l
 		}
+		if l := len(r.URL); l > uWidth {
+			uWidth = l
+		}
 	}
 
-	fmt.Fprintf(w, "%-*s%s%s\n", bWidth, hBackend, gap, hWebtop)
-	fmt.Fprintf(w, "%s%s%s\n",
-		strings.Repeat("-", bWidth),
-		gap,
-		strings.Repeat("-", wWidth),
+	fmt.Fprintf(w, "%-*s%s%-*s%s%s\n",
+		bWidth, hBackend, gap,
+		wWidth, hWebtop, gap,
+		hURL,
+	)
+	fmt.Fprintf(w, "%s%s%s%s%s\n",
+		strings.Repeat("-", bWidth), gap,
+		strings.Repeat("-", wWidth), gap,
+		strings.Repeat("-", uWidth),
 	)
 	for _, r := range rows {
-		fmt.Fprintf(w, "%-*s%s%s\n", bWidth, r.Backend, gap, r.Webtop)
+		fmt.Fprintf(w, "%-*s%s%-*s%s%s\n",
+			bWidth, r.Backend, gap,
+			wWidth, r.Webtop, gap,
+			r.URL,
+		)
 	}
 }
 
