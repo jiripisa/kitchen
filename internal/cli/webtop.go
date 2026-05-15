@@ -441,12 +441,6 @@ var (
 	tagLinkStyle = lipgloss.NewStyle().Foreground(styles.ColorMutedWarn)
 )
 
-// prLink renders "PR #123" as an OSC 8 hyperlink in the accent-2 color.
-// Modern terminals show clickable text; older ones just print the label.
-func prLink(pr github.PR) string {
-	return hyperlink(pr.URL, prLinkStyle.Render(fmt.Sprintf("PR #%d", pr.Number)))
-}
-
 // tagLink renders the image tag as a clickable GitHub ref link in warn
 // color. Empty URL ⇒ no hyperlink, just the colored label.
 func tagLink(label, url string) string {
