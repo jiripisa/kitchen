@@ -15,8 +15,9 @@ import (
 
 // PR is the subset of PR metadata kitchen surfaces in the UI.
 type PR struct {
-	Number int
-	URL    string
+	Number  int
+	URL     string
+	HeadRef string // exact git ref name (before slug normalization)
 }
 
 // Index maps "effective slug" (the canonical slug produced by
@@ -62,7 +63,7 @@ func FetchIndex(ctx context.Context, owner, repo string) (Index, error) {
 		if slug == "" {
 			continue
 		}
-		idx[slug] = PR{Number: r.Number, URL: r.URL}
+		idx[slug] = PR{Number: r.Number, URL: r.URL, HeadRef: r.HeadRefName}
 	}
 	return idx, nil
 }

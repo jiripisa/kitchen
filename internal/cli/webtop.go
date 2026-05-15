@@ -334,13 +334,23 @@ func (d *webtopData) groups() []webtopGroup {
 // PR and tag labels are styled and OSC 8 hyperlinked when a URL is
 // available. The indent makes the metadata line read as "belongs to the
 // URL above" rather than as a separate row.
+//
+// For PR-backed deployments the image tag is the EFFECTIVE_SLUG of the
+// branch, not a real git ref — GitHub returns 404 for tree/<slug>. We
+// instead link to tree/<PR.HeadRef> (the actual branch name) while keeping
+// the slug as the visible label, since the slug is what's literally
+// deployed in the cluster.
 func renderCell(urlOrLabel string, pr *github.PR, tag, repoOwner, repoName string) string {
 	var meta []string
 	if pr != nil {
 		meta = append(meta, prLink(*pr))
 	}
 	if tag != "" {
-		meta = append(meta, tagLink(tag, githubRefURL(repoOwner, repoName, tag)))
+		ref := tag
+		if pr != nil && pr.HeadRef != "" {
+			ref = pr.HeadRef
+		}
+		meta = append(meta, tagLink(tag, githubRefURL(repoOwner, repoName, ref)))
 	}
 	if len(meta) == 0 {
 		return urlOrLabel
