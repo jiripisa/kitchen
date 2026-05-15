@@ -10,13 +10,31 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 )
+
+// client-go has very conservative default rate limits (QPS=5, Burst=10)
+// that throttle our parallel fan-out across many deployments and produce
+// noisy "Waited before sending request" log lines. Bump them to values
+// reasonable for an interactive CLI tool.
+const (
+	clientQPS   = 50
+	clientBurst = 100
+)
+
+func init() {
+	// Silence klog. client-go uses it to surface internal warnings (rate
+	// limiting, retry hints, ...) that would otherwise interleave with
+	// our table output.
+	klog.SetLogger(logr.Discard())
+}
 
 // Client is a thin, opinionated wrapper around client-go.
 type Client struct {
@@ -54,6 +72,8 @@ func NewClient() (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build rest config: %w", err)
 	}
+	restCfg.QPS = clientQPS
+	restCfg.Burst = clientBurst
 
 	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
