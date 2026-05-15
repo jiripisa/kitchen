@@ -17,12 +17,30 @@ import (
 	"github.com/jiripisa/kitchen/internal/tui/styles"
 )
 
-const defaultAPITimeout = 30 * time.Second
+const (
+	defaultAPITimeout = 30 * time.Second
+	logRefreshEvery   = 15 * time.Second
+	ageTickEvery      = time.Second
 
-const listTitle = "Webtop deployments"
+	listTitle = "Webtop deployments"
+
+	// Column-rendering caps. Anything wider gets truncated with an ellipsis.
+	maxURLWidth = 72
+	maxTagWidth = 45
+	ageWidth    = 4
+)
+
+// prKind names which side of an entry a freshly fetched PR index belongs to.
+type prKind int
+
+const (
+	prKindWebtop prKind = iota
+	prKindCoreo
+)
 
 // listModel is the first screen: a picker of every webtop deployment found in
-// the current kubeconfig context.
+// the current kubeconfig context. Metadata (ingress URLs, PR indexes, log
+// timestamps) is loaded asynchronously and merged in as it arrives.
 type listModel struct {
 	client *k8s.Client
 
@@ -31,24 +49,17 @@ type listModel struct {
 	list    list.Model
 	spinner spinner.Model
 
-	loading bool
+	loading bool // true until ListAllDeployments returns
 	err     error
 
-	// prPad is the width of the longest "PR #N" label across the current
-	// entries, used to align the tag column under the PR column.
-	prPad int
-}
+	// Raw inputs aggregated by background fetches.
+	deps      []k8s.Deployment
+	urls      map[string]string
+	webtopPRs github.Index
+	coreoPRs  github.Index
+	logTimes  map[string]time.Time
 
-// entryItem wraps one webtop entry for use in bubbles/list.
-type entryItem struct {
-	e     entry
-	prPad int
-}
-
-// FilterValue is what the list's filter matches against. Concatenating both
-// URLs lets the user filter on either side of the row.
-func (i entryItem) FilterValue() string {
-	return i.e.URL + " " + i.e.Backend
+	cw colWidths
 }
 
 func newListModel(client *k8s.Client) *listModel {
@@ -72,12 +83,11 @@ func newListModel(client *k8s.Client) *listModel {
 }
 
 func (m *listModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.loadCmd())
+	return tea.Batch(m.spinner.Tick, m.loadDeploymentsCmd(), ageTickCmd())
 }
 
 func (m *listModel) SetSize(w, h int) {
 	m.width, m.height = w, h
-	// Reserve 1 line for title, 1 for status bar, 1 padding.
 	listH := h - 3
 	if listH < 3 {
 		listH = 3
@@ -85,40 +95,129 @@ func (m *listModel) SetSize(w, h int) {
 	m.list.SetSize(w, listH)
 }
 
-type entriesLoadedMsg struct {
-	entries []entry
-}
+// --- messages from background loaders ----------------------------------------
 
+type deploymentsLoadedMsg struct{ deps []k8s.Deployment }
+type ingressesLoadedMsg struct{ urls map[string]string }
+type prsLoadedMsg struct {
+	kind  prKind
+	index github.Index
+}
+type logTimesLoadedMsg struct{ times map[string]time.Time }
+type logTimesRefreshMsg struct{}
+type ageTickMsg struct{}
 type loadErrMsg struct{ err error }
 
-func (m *listModel) loadCmd() tea.Cmd {
+func (m *listModel) loadDeploymentsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 		defer cancel()
-		es, err := fetchEntries(ctx, io.Discard, m.client)
+		deps, err := m.client.ListAllDeployments(ctx)
 		if err != nil {
 			return loadErrMsg{err: err}
 		}
-		return entriesLoadedMsg{entries: es}
+		return deploymentsLoadedMsg{deps: deps}
 	}
 }
 
+func (m *listModel) loadIngressesCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+		defer cancel()
+		ings, err := m.client.ListAllIngresses(ctx)
+		if err != nil {
+			return ingressesLoadedMsg{urls: map[string]string{}}
+		}
+		return ingressesLoadedMsg{urls: buildIngressURLIndex(ings)}
+	}
+}
+
+func loadPRsCmd(owner, repo string, kind prKind) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+		defer cancel()
+		idx, _ := github.FetchIndex(ctx, owner, repo)
+		return prsLoadedMsg{kind: kind, index: idx}
+	}
+}
+
+func (m *listModel) loadLogTimesCmd() tea.Cmd {
+	deps := m.deps
+	client := m.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+		defer cancel()
+		return logTimesLoadedMsg{times: fetchLastLogTimes(ctx, client, deps)}
+	}
+}
+
+func scheduleLogRefresh() tea.Cmd {
+	return tea.Tick(logRefreshEvery, func(time.Time) tea.Msg { return logTimesRefreshMsg{} })
+}
+
+func ageTickCmd() tea.Cmd {
+	return tea.Tick(ageTickEvery, func(time.Time) tea.Msg { return ageTickMsg{} })
+}
+
+// --- bubbletea wiring --------------------------------------------------------
+
 func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case entriesLoadedMsg:
-		m.prPad = prLabelWidth(msg.entries)
-		items := make([]list.Item, 0, len(msg.entries))
-		for _, e := range msg.entries {
-			items = append(items, entryItem{e: e, prPad: m.prPad})
-		}
-		m.list.SetItems(items)
+	case deploymentsLoadedMsg:
 		m.loading = false
+		m.deps = msg.deps
+		m.refreshItems()
+		return m, tea.Batch(
+			m.loadIngressesCmd(),
+			loadPRsCmd(webtopRepoOwner, webtopRepoName, prKindWebtop),
+			loadPRsCmd(coreoRepoOwner, coreoRepoName, prKindCoreo),
+			m.loadLogTimesCmd(),
+		)
+
+	case ingressesLoadedMsg:
+		m.urls = msg.urls
+		m.refreshItems()
 		return m, nil
+
+	case prsLoadedMsg:
+		switch msg.kind {
+		case prKindWebtop:
+			m.webtopPRs = msg.index
+		case prKindCoreo:
+			m.coreoPRs = msg.index
+		}
+		m.refreshItems()
+		return m, nil
+
+	case logTimesLoadedMsg:
+		m.logTimes = msg.times
+		m.refreshItems()
+		return m, scheduleLogRefresh()
+
+	case logTimesRefreshMsg:
+		if m.deps == nil {
+			return m, nil
+		}
+		return m, m.loadLogTimesCmd()
+
+	case ageTickMsg:
+		// Trigger a re-render so "Xs/Xm" ages stay fresh between fetches.
+		// Cheaper than re-fetching log times every second.
+		m.refreshItems()
+		return m, ageTickCmd()
 
 	case loadErrMsg:
 		m.loading = false
 		m.err = msg.err
 		return m, nil
+
+	case spinner.TickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		if shouldStartFiltering(msg, m.list.FilterState()) {
@@ -141,20 +240,29 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 			}
 			return m, nil
 		}
-
-	case spinner.TickMsg:
-		if !m.loading {
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
 	}
 
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	syncListTitle(&m.list, listTitle)
 	return m, cmd
+}
+
+// refreshItems rebuilds the list's items from the currently-known inputs.
+// Safe to call as data trickles in — the order is stable (see entriesFromInputs).
+func (m *listModel) refreshItems() {
+	entries := entriesFromInputs(m.deps, m.urls, m.webtopPRs, m.coreoPRs, m.logTimes)
+	m.cw = computeColWidths(entries)
+	items := make([]list.Item, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, entryItem{e: e, cw: m.cw})
+	}
+	// Preserve the cursor position so periodic refreshes don't jump it.
+	cur := m.list.Index()
+	m.list.SetItems(items)
+	if cur >= 0 && cur < len(items) {
+		m.list.Select(cur)
+	}
 }
 
 func (m *listModel) View() string {
@@ -183,16 +291,92 @@ func (m *listModel) View() string {
 	b.WriteString(components.StatusBar(m.width,
 		[]components.StatusItem{
 			{Key: "context", Value: m.client.Context()},
+			{Key: "loaded", Value: m.loadProgress()},
 		},
 		pickerHint(m.list.FilterState()),
 	))
 	return b.String()
 }
 
-// --- delegate rendering -------------------------------------------------------
+// loadProgress is a tiny string in the status bar showing which background
+// fetches have completed: ingress, webtop PRs, coreo PRs, log times.
+func (m *listModel) loadProgress() string {
+	mark := func(done bool, name string) string {
+		if done {
+			return name
+		}
+		return styles.Hint.Render(name)
+	}
+	return strings.Join([]string{
+		mark(m.urls != nil, "ing"),
+		mark(m.webtopPRs != nil, "wt-pr"),
+		mark(m.coreoPRs != nil, "co-pr"),
+		mark(m.logTimes != nil, "logs"),
+	}, " ")
+}
 
-// entryDelegate renders each entry on two lines: webtop URL on top, coreo
-// backend underneath, both decorated with PR / tag / log-age metadata.
+// --- delegate / column-aligned rendering -------------------------------------
+
+// entryItem wraps one webtop entry for use in bubbles/list. The column widths
+// are stamped into the item so the delegate can render aligned rows without
+// reading state from elsewhere.
+type entryItem struct {
+	e  entry
+	cw colWidths
+}
+
+// FilterValue is what the list's filter matches. Includes the deployment name
+// so filtering works even before ingresses have loaded.
+func (i entryItem) FilterValue() string {
+	return i.e.Name + " " + i.e.URL + " " + i.e.Backend
+}
+
+// colWidths are the rendered widths shared by every row in the current list.
+type colWidths struct {
+	url, pr, tag int
+}
+
+func computeColWidths(es []entry) colWidths {
+	cw := colWidths{}
+	for _, e := range es {
+		webURL := e.URL
+		if webURL == "" {
+			webURL = "-"
+		}
+		coreoURL := e.Backend
+		if coreoURL == "" {
+			coreoURL = noCoreoLabel
+		}
+		for _, u := range []string{webURL, coreoURL} {
+			if w := lipgloss.Width(u); w > cw.url {
+				cw.url = w
+			}
+		}
+		for _, pr := range []*github.PR{e.WebtopPR, e.CoreoPR} {
+			if pr == nil {
+				continue
+			}
+			if w := len(fmt.Sprintf("PR #%d", pr.Number)); w > cw.pr {
+				cw.pr = w
+			}
+		}
+		for _, t := range []string{e.WebtopTag, e.CoreoTag} {
+			if w := len(t); w > cw.tag {
+				cw.tag = w
+			}
+		}
+	}
+	if cw.url > maxURLWidth {
+		cw.url = maxURLWidth
+	}
+	if cw.tag > maxTagWidth {
+		cw.tag = maxTagWidth
+	}
+	return cw
+}
+
+// entryDelegate renders each entry on two aligned lines: webtop on top, coreo
+// backend underneath.
 type entryDelegate struct{}
 
 func (d entryDelegate) Height() int                         { return 2 }
@@ -203,9 +387,11 @@ var (
 	urlStyle         = lipgloss.NewStyle().Foreground(styles.ColorText)
 	urlSelectedStyle = lipgloss.NewStyle().Foreground(styles.ColorAccent).Bold(true)
 	urlDimStyle      = lipgloss.NewStyle().Foreground(styles.ColorDim)
+	urlBackendStyle  = lipgloss.NewStyle().Foreground(styles.ColorText)
 	prLinkStyle      = lipgloss.NewStyle().Foreground(styles.ColorMutedAccent)
 	tagLinkStyle     = lipgloss.NewStyle().Foreground(styles.ColorMutedWarn)
 	lastLogStyle     = lipgloss.NewStyle().Foreground(styles.ColorDim)
+	placeholderStyle = lipgloss.NewStyle().Foreground(styles.ColorDim).Italic(true)
 )
 
 func (d entryDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -214,99 +400,124 @@ func (d entryDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 		return
 	}
 	selected := index == m.Index()
-	width := m.Width()
-	if width <= 0 {
-		width = 80
-	}
 
+	// Webtop row.
 	cursor := "  "
+	style := urlStyle
 	if selected {
 		cursor = "▸ "
+		style = urlSelectedStyle
 	}
-
-	webtopLine := cursor + renderURLLine(
-		it.e.URL, it.e.WebtopPR, it.e.WebtopTag, it.e.WebtopLastLog,
-		webtopRepoOwner, webtopRepoName, it.prPad, selected)
-
-	coreoLabel := it.e.Backend
-	if coreoLabel == "" {
-		coreoLabel = noCoreoLabel
+	webtopURL := it.e.URL
+	if webtopURL == "" {
+		webtopURL = "-"
+		style = placeholderStyle
 	}
-	coreoLine := "    " + renderURLLine(
-		coreoLabel, it.e.CoreoPR, it.e.CoreoTag, it.e.CoreoLastLog,
-		coreoRepoOwner, coreoRepoName, it.prPad, false)
+	top := cursor + renderRow(webtopURL, style,
+		it.e.WebtopPR, it.e.WebtopTag, it.e.WebtopLastLog,
+		webtopRepoOwner, webtopRepoName, it.cw)
 
-	fmt.Fprint(w, webtopLine+"\n"+coreoLine)
+	// Coreo row (always 2-char indent so URL columns align with the webtop
+	// row above).
+	coreoURL := it.e.Backend
+	coreoStyle := urlBackendStyle
+	if coreoURL == "" {
+		coreoURL = noCoreoLabel
+		coreoStyle = placeholderStyle
+	}
+	bottom := "  " + renderRow(coreoURL, coreoStyle,
+		it.e.CoreoPR, it.e.CoreoTag, it.e.CoreoLastLog,
+		coreoRepoOwner, coreoRepoName, it.cw)
+
+	fmt.Fprint(w, top+"\n"+bottom)
 }
 
-// renderURLLine renders one line of "URL    PR #N  tag  age", colouring the
-// URL accent when selected and dimmed when this is the coreo "(no coreo)"
-// placeholder.
-func renderURLLine(urlOrLabel string, pr *github.PR, tag string, lastLog time.Time, repoOwner, repoName string, prPad int, selected bool) string {
-	style := urlStyle
-	switch {
-	case selected:
-		style = urlSelectedStyle
-	case urlOrLabel == noCoreoLabel || urlOrLabel == "-":
-		style = urlDimStyle
-	}
-
-	url := urlOrLabel
-	link := style.Render(url)
-	if isHTTP(urlOrLabel) {
-		link = hyperlink(urlOrLabel, link)
-	}
-
-	if pr == nil && tag == "" && lastLog.IsZero() {
-		return link
-	}
-
+// renderRow renders one URL + PR + TAG + AGE line with all columns padded to
+// the shared widths in cw. Empty cells render as spaces so the next column
+// still starts at its anchor position.
+func renderRow(urlLabel string, style lipgloss.Style, pr *github.PR, tag string, lastLog time.Time, repoOwner, repoName string, cw colWidths) string {
 	var b strings.Builder
-	b.WriteString(link)
+
+	// URL column (with optional OSC 8 hyperlink wrapping the visible text).
+	urlDisplay := truncateText(urlLabel, cw.url)
+	if isHTTP(urlLabel) {
+		b.WriteString(hyperlink(urlLabel, style.Render(urlDisplay)))
+	} else {
+		b.WriteString(style.Render(urlDisplay))
+	}
+	padTo(&b, lipgloss.Width(urlDisplay), cw.url)
 	b.WriteString("  ")
 
-	switch {
-	case pr != nil:
-		label := fmt.Sprintf("PR #%d", pr.Number)
-		b.WriteString(hyperlink(pr.URL, prLinkStyle.Render(label)))
-		if (tag != "" || !lastLog.IsZero()) && prPad > len(label) {
-			b.WriteString(strings.Repeat(" ", prPad-len(label)))
+	// PR column.
+	if cw.pr > 0 {
+		if pr != nil {
+			label := fmt.Sprintf("PR #%d", pr.Number)
+			b.WriteString(hyperlink(pr.URL, prLinkStyle.Render(label)))
+			padTo(&b, len(label), cw.pr)
+		} else {
+			b.WriteString(strings.Repeat(" ", cw.pr))
 		}
-	case prPad > 0 && (tag != "" || !lastLog.IsZero()):
-		b.WriteString(strings.Repeat(" ", prPad))
+		b.WriteString("  ")
 	}
 
-	if tag != "" {
-		if pr != nil || prPad > 0 {
-			b.WriteString("  ")
+	// Tag column.
+	if cw.tag > 0 {
+		if tag != "" {
+			tagDisplay := truncateText(tag, cw.tag)
+			ref := tag
+			if pr != nil && pr.HeadRef != "" {
+				ref = pr.HeadRef
+			}
+			if u := githubRefURL(repoOwner, repoName, ref); u != "" {
+				b.WriteString(hyperlink(u, tagLinkStyle.Render(tagDisplay)))
+			} else {
+				b.WriteString(tagLinkStyle.Render(tagDisplay))
+			}
+			padTo(&b, lipgloss.Width(tagDisplay), cw.tag)
+		} else {
+			b.WriteString(strings.Repeat(" ", cw.tag))
 		}
-		ref := tag
-		if pr != nil && pr.HeadRef != "" {
-			ref = pr.HeadRef
-		}
-		b.WriteString(tagLink(tag, githubRefURL(repoOwner, repoName, ref)))
+		b.WriteString("  ")
 	}
 
+	// Age column (right-aligned in a small fixed slot).
 	if !lastLog.IsZero() {
-		if pr != nil || tag != "" || prPad > 0 {
-			b.WriteString("  ")
+		age := humanDuration(time.Since(lastLog))
+		if pad := ageWidth - lipgloss.Width(age); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
 		}
-		b.WriteString(lastLogStyle.Render(humanDuration(time.Since(lastLog))))
+		b.WriteString(lastLogStyle.Render(age))
 	}
 
-	return b.String()
+	return strings.TrimRight(b.String(), " ")
+}
+
+func padTo(b *strings.Builder, visible, target int) {
+	if pad := target - visible; pad > 0 {
+		b.WriteString(strings.Repeat(" ", pad))
+	}
+}
+
+func truncateText(s string, maxW int) string {
+	if lipgloss.Width(s) <= maxW {
+		return s
+	}
+	if maxW <= 1 {
+		return "…"
+	}
+	// Cut by runes so we don't split a multi-byte sequence.
+	runes := []rune(s)
+	for i := len(runes); i >= 0; i-- {
+		candidate := string(runes[:i]) + "…"
+		if lipgloss.Width(candidate) <= maxW {
+			return candidate
+		}
+	}
+	return "…"
 }
 
 func isHTTP(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
-}
-
-func tagLink(label, url string) string {
-	styled := tagLinkStyle.Render(label)
-	if url == "" {
-		return styled
-	}
-	return hyperlink(url, styled)
 }
 
 func hyperlink(url, body string) string {

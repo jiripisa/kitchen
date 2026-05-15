@@ -7,7 +7,6 @@ package webtop
 import (
 	"context"
 	"fmt"
-	"io"
 	neturl "net/url"
 	"sort"
 	"strings"
@@ -59,91 +58,55 @@ type entry struct {
 	CoreoLastLog  time.Time
 }
 
-// fetchEntries gathers everything we need to render one `kitchen webtop`
-// table: deployments, ingresses, PRs from both upstream repos, and the
-// most recent log timestamp for each deployment. All four base fetches
-// run in parallel.
-func fetchEntries(ctx context.Context, stderr io.Writer, client *k8s.Client) ([]entry, error) {
-	var (
-		deps       []k8s.Deployment
-		ingresses  []k8s.IngressEndpoint
-		coreoPRs   github.Index
-		webtopPRs  github.Index
-		depsErr    error
-		ingressErr error
-		wg         sync.WaitGroup
-	)
-
-	wg.Add(4)
-	go func() {
-		defer wg.Done()
-		deps, depsErr = client.ListAllDeployments(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		ingresses, ingressErr = client.ListAllIngresses(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		idx, err := github.FetchIndex(ctx, coreoRepoOwner, coreoRepoName)
-		if err != nil {
-			fmt.Fprintf(stderr, "warning: coreo PR lookup: %v\n", err)
-		}
-		coreoPRs = idx
-	}()
-	go func() {
-		defer wg.Done()
-		idx, err := github.FetchIndex(ctx, webtopRepoOwner, webtopRepoName)
-		if err != nil {
-			fmt.Fprintf(stderr, "warning: webtop PR lookup: %v\n", err)
-		}
-		webtopPRs = idx
-	}()
-	wg.Wait()
-
-	if depsErr != nil {
-		return nil, depsErr
-	}
-	if ingressErr != nil {
-		fmt.Fprintf(stderr,
-			"warning: could not list ingresses (%v); webtop URL column will be empty\n", ingressErr)
-		ingresses = nil
-	}
-
-	urls := buildIngressURLIndex(ingresses)
+// entriesFromInputs builds the displayable entries from the four independently
+// fetched data sources. Any of urls/webtopPRs/coreoPRs/logTimes may be nil —
+// the resulting entries simply carry the corresponding fields empty.
+func entriesFromInputs(
+	deps []k8s.Deployment,
+	urls map[string]string,
+	webtopPRs github.Index,
+	coreoPRs github.Index,
+	logTimes map[string]time.Time,
+) []entry {
 	coreoTags := buildCoreoTagIndex(deps)
-	lastLogs := fetchLastLogTimes(ctx, client, deps)
 
-	entries := make([]entry, 0, len(deps))
+	out := make([]entry, 0, len(deps))
 	for _, d := range deps {
 		if !isWebtopDeployment(d) {
 			continue
 		}
 		e := entry{
-			Namespace:     d.Namespace,
-			Name:          d.Name,
-			Backend:       webtopBackend(d),
-			URL:           urls[d.Namespace+"/"+d.Name],
-			WebtopTag:     webtopImageTag(d),
-			WebtopLastLog: lastLogs[d.Namespace+"/"+d.Name],
+			Namespace: d.Namespace,
+			Name:      d.Name,
+			Backend:   webtopBackend(d),
+			WebtopTag: webtopImageTag(d),
 		}
-		if pr, ok := webtopPRs[webtopSlugFromName(d.Name)]; ok {
-			e.WebtopPR = &pr
+		if urls != nil {
+			e.URL = urls[d.Namespace+"/"+d.Name]
 		}
-		if pr, ok := coreoPRs[coreoSlugFromURL(e.Backend)]; ok {
-			e.CoreoPR = &pr
+		if webtopPRs != nil {
+			if pr, ok := webtopPRs[webtopSlugFromName(d.Name)]; ok {
+				e.WebtopPR = &pr
+			}
+		}
+		if coreoPRs != nil {
+			if pr, ok := coreoPRs[coreoSlugFromURL(e.Backend)]; ok {
+				e.CoreoPR = &pr
+			}
 		}
 		coreoKey := coreoDeploymentKeyForURL(e.Backend)
 		e.CoreoTag = coreoTags[coreoKey]
-		e.CoreoLastLog = lastLogs[coreoKey]
-		entries = append(entries, e)
+		if logTimes != nil {
+			e.WebtopLastLog = logTimes[d.Namespace+"/"+d.Name]
+			e.CoreoLastLog = logTimes[coreoKey]
+		}
+		out = append(out, e)
 	}
 
-	// Sort entries: by coreo backend (ascending, no-coreo last), then by
-	// webtop URL. Adjacent entries thus share a coreo, which is what the
-	// list-with-grouping rendering relies on.
-	sort.SliceStable(entries, func(i, j int) bool {
-		a, b := entries[i].Backend, entries[j].Backend
+	// Sort by coreo backend (no-coreo last), then by webtop URL, then by
+	// name so the order is stable while URLs are still loading.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].Backend, out[j].Backend
 		switch {
 		case a == "" && b != "":
 			return false
@@ -151,12 +114,13 @@ func fetchEntries(ctx context.Context, stderr io.Writer, client *k8s.Client) ([]
 			return true
 		case a != b:
 			return a < b
+		case out[i].URL != out[j].URL:
+			return out[i].URL < out[j].URL
 		default:
-			return entries[i].URL < entries[j].URL
+			return out[i].Name < out[j].Name
 		}
 	})
-
-	return entries, nil
+	return out
 }
 
 // fetchLastLogTimes asks every webtop and coreo deployment in `deps` for the
@@ -336,23 +300,6 @@ func githubRefURL(owner, repo, ref string) string {
 		return ""
 	}
 	return fmt.Sprintf("https://github.com/%s/%s/tree/%s", owner, repo, ref)
-}
-
-// prLabelWidth returns the width of the longest "PR #NNN" label across
-// every PR referenced from the entries.
-func prLabelWidth(entries []entry) int {
-	maxW := 0
-	for _, e := range entries {
-		for _, pr := range [...]*github.PR{e.WebtopPR, e.CoreoPR} {
-			if pr == nil {
-				continue
-			}
-			if w := len(fmt.Sprintf("PR #%d", pr.Number)); w > maxW {
-				maxW = w
-			}
-		}
-	}
-	return maxW
 }
 
 // humanDuration formats a duration as "5s" / "3m" / "2h" / "4d".
