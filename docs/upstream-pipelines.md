@@ -57,7 +57,19 @@ name is literally `mafin-coreo` or `mafin-coreo-app`.
 Review-app manifests are rendered with `envsubst` substituting two variables:
 
 - `${SUFFIX}` — a slug derived from the branch / ref via `finforce/actions-base@main`'s
-  `EFFECTIVE_SLUG` output (max 45 chars, lowercase, `[^a-z0-9-]` → `-`).
+  `EFFECTIVE_SLUG` output. The algorithm (re-implemented in
+  `internal/github/prs.go::EffectiveSlug`) is:
+
+  1. strip `refs/heads/` or `refs/tags/` prefix
+  2. lowercase
+  3. replace any character outside `[a-z0-9-]` with `-`
+  4. truncate to 45 characters
+  5. strip trailing dashes
+
+  If upstream changes any of these steps, kitchen's PR linking will silently
+  stop matching for affected branches. Re-run the regression case
+  `chore/COREO-1101/dividendy/bugfix/zapis-na-chybu → chore-coreo-1101-dividendy-bugfix-zapis-na-ch`
+  whenever this file is refreshed.
 - `${NONCE}` — `$GITHUB_RUN_ID`; surfaces as a pod label so re-deploys roll the
   ReplicaSet even if the image tag didn't change.
 
@@ -177,6 +189,7 @@ Ingress    mafin-coreo-app[-<SUFFIX>]   rules[0].host = webtop-<SUFFIX>.mafin.fi
 | `kitchen webtop` identifies webtop deployments | image starts with `ghcr.io/finforce/mafin-coreo-app` |
 | `kitchen webtop` reads the COREO column        | env var `MAFIN_URL` on the webtop container, as a literal value |
 | `kitchen webtop` reads the WEBTOP URL column   | Ingress in the same namespace whose backend service name equals the deployment name; host is `webtop-<SUFFIX>.mafin.finforce.dev`, served as HTTPS |
+| `kitchen webtop` links deployments to PRs      | the SUFFIX in a Deployment name (webtop) and the SUFFIX in a coreo Ingress host both equal `EFFECTIVE_SLUG(headRef)` produced by `finforce/actions-base@main` — see `internal/github.EffectiveSlug` for the Go re-implementation |
 | `kitchen log` shows pods of a deployment       | standard k8s deployment → ReplicaSet → Pod label selectors |
 
 Any change to the upstream pipelines that breaks one of these assumptions

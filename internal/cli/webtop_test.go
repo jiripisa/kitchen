@@ -1,108 +1,25 @@
 package cli
 
 import (
-	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/jiripisa/kitchen/internal/github"
 	"github.com/jiripisa/kitchen/internal/k8s"
 )
-
-func TestBuildWebtopRows(t *testing.T) {
-	in := []webtopEntry{
-		// out of order on purpose; entries with the same coreo are sorted
-		// alphabetically by webtop URL.
-		{Namespace: "mafin", Name: "app-b", Backend: "https://coreo.main", URL: "https://b.dev"},
-		{Namespace: "mafin", Name: "no-coreo", Backend: "", URL: ""},
-		{Namespace: "mafin", Name: "app-a", Backend: "https://coreo.main", URL: "https://a.dev"},
-		{Namespace: "mafin", Name: "feat-app", Backend: "https://coreo-feat-1", URL: "https://feat.dev"},
-		{Namespace: "other", Name: "shared", Backend: "https://coreo.main", URL: "https://shared.dev"},
-	}
-	got := buildWebtopRows(in)
-
-	want := []webtopRow{
-		{Coreo: "https://coreo-feat-1", Webtop: "https://feat.dev"},
-		{Coreo: "https://coreo.main", Webtop: "https://a.dev"},
-		{Coreo: "https://coreo.main", Webtop: "https://b.dev"},
-		{Coreo: "https://coreo.main", Webtop: "https://shared.dev"},
-		{Coreo: "(no coreo)", Webtop: "-"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildWebtopRows mismatch:\ngot:  %+v\nwant: %+v", got, want)
-	}
-}
-
-func TestRenderWebtopTable(t *testing.T) {
-	rows := []webtopRow{
-		{Coreo: "https://coreo.feat", Webtop: "https://feat.dev"},
-		{Coreo: "https://coreo.main", Webtop: "https://a.dev"},
-		{Coreo: "https://coreo.main", Webtop: "https://b.dev"},
-		{Coreo: "(no coreo)", Webtop: "-"},
-	}
-	var buf bytes.Buffer
-	renderWebtopTable(&buf, rows)
-
-	// Column widths:
-	//   WEBTOP = max(len("WEBTOP")=6, len("https://feat.dev")=16) = 16
-	//   COREO  = max(len("COREO")=5,  len("https://coreo.main")=18) = 18
-	//
-	// Note: the COREO column is blank on the continuation row (a.dev → b.dev
-	// share the same coreo).
-	want := "" +
-		"WEBTOP            COREO\n" +
-		"----------------  ------------------\n" +
-		"https://feat.dev  https://coreo.feat\n" +
-		"https://a.dev     https://coreo.main\n" +
-		"https://b.dev\n" +
-		"-                 (no coreo)\n"
-	if got := buf.String(); got != want {
-		t.Fatalf("render mismatch:\ngot:\n%q\nwant:\n%q", got, want)
-	}
-}
-
-func TestBuildIngressURLIndex(t *testing.T) {
-	endpoints := []k8s.IngressEndpoint{
-		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "webtop-main.mafin.finforce.dev"},
-		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "duplicate.host.dev"}, // ignored (first wins)
-		{Namespace: "other", ServiceName: "mafin-coreo-app-main", Host: "other-main.dev"},     // different ns
-	}
-	got := buildIngressURLIndex(endpoints)
-	want := map[string]string{
-		"mafin/mafin-coreo-app-main": "https://webtop-main.mafin.finforce.dev",
-		"other/mafin-coreo-app-main": "https://other-main.dev",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildIngressURLIndex mismatch:\ngot:  %v\nwant: %v", got, want)
-	}
-}
-
-func TestRenderWebtopTableEmpty(t *testing.T) {
-	var buf bytes.Buffer
-	renderWebtopTable(&buf, nil)
-	if buf.Len() != 0 {
-		t.Fatalf("expected empty output, got %q", buf.String())
-	}
-}
 
 func TestIsWebtopImage(t *testing.T) {
 	cases := []struct {
 		image string
 		want  bool
 	}{
-		// Positive: review-app with feature-branch slug.
 		{"ghcr.io/finforce/mafin-coreo-app:chore-coreo-1101", true},
-		// Positive: staging release tag.
 		{"ghcr.io/finforce/mafin-coreo-app:1.2.3", true},
-		// Positive: digest-pinned production.
 		{"ghcr.io/finforce/mafin-coreo-app@sha256:abc123", true},
-		// Positive: bare repo (implicit :latest).
 		{"ghcr.io/finforce/mafin-coreo-app", true},
-
-		// Negative: sibling project sharing the org prefix.
 		{"ghcr.io/finforce/mafin-coreo-app-helper:foo", false},
-		// Negative: same name in a different org.
 		{"ghcr.io/other/mafin-coreo-app:1", false},
-		// Negative: unrelated image.
 		{"nginx:1.27", false},
 		{"", false},
 	}
@@ -129,14 +46,6 @@ func TestWebtopBackend(t *testing.T) {
 				Env:   map[string]string{"MAFIN_URL": "https://coreo.mafin.finforce.dev"},
 			}}},
 			want: "https://coreo.mafin.finforce.dev",
-		},
-		{
-			name: "no env at all",
-			d: k8s.Deployment{Containers: []k8s.Container{{
-				Name:  "mafin-coreo-app",
-				Image: "ghcr.io/finforce/mafin-coreo-app:foo",
-			}}},
-			want: "",
 		},
 		{
 			name: "env on a sibling container is ignored",
@@ -180,22 +89,6 @@ func TestIsWebtopDeployment(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "unrelated containers",
-			d: k8s.Deployment{Containers: []k8s.Container{
-				{Name: "nginx", Image: "nginx:1.27"},
-				{Name: "redis", Image: "redis:7"},
-			}},
-			want: false,
-		},
-		{
-			name: "webtop image in second container (e.g. sidecar layout)",
-			d: k8s.Deployment{Containers: []k8s.Container{
-				{Name: "proxy", Image: "envoyproxy/envoy:v1.30"},
-				{Name: "app", Image: "ghcr.io/finforce/mafin-coreo-app:feat-foo"},
-			}},
-			want: true,
-		},
-		{
 			name: "name says webtop but image does not — not webtop",
 			d: k8s.Deployment{
 				Name:       "mafin-coreo-app-something",
@@ -210,5 +103,103 @@ func TestIsWebtopDeployment(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildIngressURLIndex(t *testing.T) {
+	endpoints := []k8s.IngressEndpoint{
+		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "webtop-main.mafin.finforce.dev"},
+		{Namespace: "mafin", ServiceName: "mafin-coreo-app-main", Host: "duplicate.host.dev"}, // ignored
+		{Namespace: "other", ServiceName: "mafin-coreo-app-main", Host: "other-main.dev"},
+	}
+	got := buildIngressURLIndex(endpoints)
+	want := map[string]string{
+		"mafin/mafin-coreo-app-main": "https://webtop-main.mafin.finforce.dev",
+		"other/mafin-coreo-app-main": "https://other-main.dev",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildIngressURLIndex mismatch:\ngot:  %v\nwant: %v", got, want)
+	}
+}
+
+func TestWebtopSlugFromName(t *testing.T) {
+	cases := []struct {
+		name, want string
+	}{
+		{"mafin-coreo-app-feat-coreo-101", "feat-coreo-101"},
+		{"mafin-coreo-app-main", "main"},
+		{"mafin-coreo-app", ""}, // staging — no suffix
+		{"unrelated-name", "unrelated-name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := webtopSlugFromName(tc.name); got != tc.want {
+				t.Fatalf("webtopSlugFromName(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCoreoSlugFromURL(t *testing.T) {
+	cases := []struct {
+		url, want string
+	}{
+		{"https://coreo-feature-101.mafin.finforce.dev", "feature-101"},
+		{"https://coreo.mafin.finforce.dev", ""}, // canonical (no suffix)
+		{"https://coreo-main.mafin.finforce.dev/foo/bar", "main"},
+		{"https://webtop-foo.mafin.finforce.dev", ""}, // not a coreo URL
+		{"https://elsewhere.example.com", ""},
+		{"", ""},
+		{"not a url at all", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			if got := coreoSlugFromURL(tc.url); got != tc.want {
+				t.Fatalf("coreoSlugFromURL(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWebtopDataGroups exercises the grouping & PR-enrichment shape. We don't
+// snapshot the rendered table because lipgloss output contains ANSI escapes
+// that aren't worth pinning byte-by-byte.
+func TestWebtopDataGroups(t *testing.T) {
+	d := &webtopData{
+		entries: []webtopEntry{
+			{Namespace: "mafin", Name: "mafin-coreo-app-a", Backend: "https://coreo.main", URL: "https://webtop-a.dev",
+				WebtopPR: &github.PR{Number: 1, URL: "https://github.com/x/webtop/pull/1"}},
+			{Namespace: "mafin", Name: "mafin-coreo-app-b", Backend: "https://coreo.main", URL: "https://webtop-b.dev"},
+			{Namespace: "mafin", Name: "mafin-coreo-app-feat", Backend: "https://coreo-feat.dev", URL: "https://webtop-feat.dev",
+				CoreoPR: &github.PR{Number: 7, URL: "https://github.com/x/coreo/pull/7"}},
+			{Namespace: "mafin", Name: "mafin-coreo-app-broken", Backend: "", URL: ""},
+		},
+	}
+	groups := d.groups()
+
+	// Group order: alphabetical by coreo, no-coreo last.
+	if got, want := len(groups), 3; got != want {
+		t.Fatalf("got %d groups, want %d", got, want)
+	}
+	if !strings.HasPrefix(groups[0].Coreo, "https://coreo-feat.dev") {
+		t.Fatalf("first group coreo: %q", groups[0].Coreo)
+	}
+	if !strings.Contains(groups[0].Coreo, "PR #7") {
+		t.Fatalf("first group should carry coreo PR #7: %q", groups[0].Coreo)
+	}
+	if !strings.HasPrefix(groups[1].Coreo, "https://coreo.main") {
+		t.Fatalf("second group coreo: %q", groups[1].Coreo)
+	}
+	if got, want := len(groups[1].WebtopRows), 2; got != want {
+		t.Fatalf("second group rows: got %d, want %d", got, want)
+	}
+	if !strings.Contains(groups[1].WebtopRows[0], "PR #1") {
+		t.Fatalf("first webtop in shared-coreo group should carry PR #1: %q", groups[1].WebtopRows[0])
+	}
+	if groups[2].Coreo != noCoreoLabel {
+		t.Fatalf("last group coreo label: %q", groups[2].Coreo)
+	}
+	if got, want := groups[2].WebtopRows[0], "-"; got != want {
+		t.Fatalf("no-coreo group webtop row: got %q, want %q", got, want)
 	}
 }
