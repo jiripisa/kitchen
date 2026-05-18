@@ -30,14 +30,18 @@ const (
 	maxTagWidth = 45
 	ageWidth    = 4
 
-	// Two-panel layout: target right-panel width with a min/max clamp. The
-	// left panel gets whatever's left after the divider + spaces. Below
-	// minTotalForSplit the right panel is hidden and the list runs full
-	// width again.
-	rightTargetWidth = 50
-	rightMinWidth    = 28
-	dividerCols      = 3 // " │ "
-	minTotalForSplit = 90
+	// Two-panel layout. The right panel sizes itself to the widest URL it
+	// has to show across the whole dataset (so truncation only kicks in
+	// when the terminal genuinely doesn't have room), clamped between
+	// rightMinWidth (the meta line must fit without wrapping) and the
+	// space that's left after the left panel keeps its own minimum.
+	// Below minTotalForSplit cols the right panel is hidden and the list
+	// runs full-width again.
+	rightMinWidth      = 42 // "  PR #N  TAG  AGE" + panel padding fits cleanly here
+	rightPanelPadding  = 2  // lipgloss panel Padding(0, 1) on each side
+	leftMinPanelWidth  = 50 // URL + PR + age + cursor without the tag column
+	dividerCols        = 3  // " │ "
+	minTotalForSplit   = 90
 )
 
 // kindPR distinguishes which PR index a prsLoadedMsg carries.
@@ -69,7 +73,10 @@ type listModel struct {
 	webtopPRs github.Index
 	logTimes  map[string]time.Time
 
-	cw colWidths
+	// Derived view of the inputs, cached so layout/width calculations don't
+	// have to walk the deployments slice again.
+	entries []entry
+	cw      colWidths
 }
 
 func newListModel(client *k8s.Client) *listModel {
@@ -98,27 +105,72 @@ func (m *listModel) Init() tea.Cmd {
 
 func (m *listModel) SetSize(w, h int) {
 	m.width, m.height = w, h
+	m.recomputeLayout()
+}
 
-	if w >= minTotalForSplit {
-		right := rightTargetWidth
-		if right > w/2 {
-			right = w / 2
-		}
-		if right < rightMinWidth {
-			right = rightMinWidth
-		}
-		m.rightWidth = right
-		m.leftWidth = w - right - dividerCols
-	} else {
+// recomputeLayout sizes the left and right panels from the current terminal
+// dimensions and the loaded entries. Called whenever either changes.
+//
+// The right panel is sized to fit the widest URL we have to render (coreo
+// URLs in the heading + every bound webtop's URL) without truncating. When
+// the terminal is too narrow to give both panels their minimums, the right
+// panel collapses to zero and the list runs full-width.
+func (m *listModel) recomputeLayout() {
+	w, h := m.width, m.height
+	if w == 0 || h == 0 {
+		return
+	}
+
+	if w < minTotalForSplit {
 		m.rightWidth = 0
 		m.leftWidth = w
+	} else {
+		ideal := desiredRightPanelWidth(m.entries)
+		maxRight := w - leftMinPanelWidth - dividerCols
+		switch {
+		case maxRight < rightMinWidth:
+			// Not enough room for both panels at usable widths.
+			m.rightWidth = 0
+			m.leftWidth = w
+		case ideal < rightMinWidth:
+			m.rightWidth = rightMinWidth
+			m.leftWidth = w - rightMinWidth - dividerCols
+		case ideal > maxRight:
+			m.rightWidth = maxRight
+			m.leftWidth = leftMinPanelWidth
+		default:
+			m.rightWidth = ideal
+			m.leftWidth = w - ideal - dividerCols
+		}
 	}
+
+	m.cw = computeColWidths(m.entries, m.leftWidth)
 
 	listH := h - 3
 	if listH < 3 {
 		listH = 3
 	}
 	m.list.SetSize(m.leftWidth, listH)
+}
+
+// desiredRightPanelWidth returns the panel width that lets the longest URL
+// in the dataset render without an ellipsis. Includes room for the `→ `
+// prefix on the heading line and the panel's side padding.
+func desiredRightPanelWidth(entries []entry) int {
+	maxContent := 0
+	for _, e := range entries {
+		// Heading on the right shows the coreo URL prefixed with "→ ".
+		if w := lipgloss.Width(e.URL) + 2; w > maxContent {
+			maxContent = w
+		}
+		// Each bound webtop's URL is shown plain.
+		for _, bw := range e.Webtops {
+			if w := lipgloss.Width(bw.URL); w > maxContent {
+				maxContent = w
+			}
+		}
+	}
+	return maxContent + rightPanelPadding
 }
 
 // --- messages -------------------------------------------------------------
@@ -273,11 +325,14 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 // SetItems returns a tea.Cmd that re-runs the active filter — we MUST thread
 // it back, otherwise typing in the filter prompt empties the view (the same
 // bug we fixed in webtop list).
+//
+// Re-runs recomputeLayout: the right panel width is derived from the data
+// (longest URL), so a new dataset may want a different split.
 func (m *listModel) refreshItems() tea.Cmd {
-	entries := entriesFromInputs(m.deps, m.urls, m.coreoPRs, m.webtopPRs, m.logTimes)
-	m.cw = computeColWidths(entries, m.leftWidth)
-	items := make([]list.Item, 0, len(entries))
-	for _, e := range entries {
+	m.entries = entriesFromInputs(m.deps, m.urls, m.coreoPRs, m.webtopPRs, m.logTimes)
+	m.recomputeLayout()
+	items := make([]list.Item, 0, len(m.entries))
+	for _, e := range m.entries {
 		items = append(items, entryItem{e: e, cw: m.cw})
 	}
 	cur := m.list.Index()
@@ -364,7 +419,11 @@ func (m *listModel) renderRightPanel(height int) string {
 	b.WriteString(rightHeadingStyle.Render(heading))
 	b.WriteByte('\n')
 	if sel.URL != "" {
-		b.WriteString(rightDimStyle.Render("→ " + truncateText(sel.URL, m.rightWidth-2)))
+		// Content budget = panel width minus its side padding (rightPanelPadding)
+		// minus the "→ " prefix. Truncation only kicks in when the data
+		// genuinely overflows the dynamic panel width.
+		urlBudget := m.rightWidth - rightPanelPadding - 2
+		b.WriteString(rightDimStyle.Render("→ " + truncateText(sel.URL, urlBudget)))
 	}
 	b.WriteByte('\n')
 	b.WriteByte('\n')
@@ -406,12 +465,14 @@ func (m *listModel) renderRightPanel(height int) string {
 func (m *listModel) renderBoundWebtop(bw boundWebtop) string {
 	var b strings.Builder
 
-	// First line: the webtop URL (truncated, hyperlinked if HTTP).
+	// First line: the webtop URL — hyperlinked when http(s), and only
+	// shortened with an ellipsis when it genuinely doesn't fit the panel.
 	urlText := bw.URL
 	if urlText == "" {
 		urlText = "(no ingress)"
 	}
-	display := truncateText(urlText, m.rightWidth-2)
+	urlBudget := m.rightWidth - rightPanelPadding
+	display := truncateText(urlText, urlBudget)
 	styled := rightURLStyle.Render(display)
 	if isHTTP(urlText) {
 		styled = hyperlink(urlText, styled)
