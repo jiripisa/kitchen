@@ -1,8 +1,8 @@
 # kitchen
 
-A developer toolbox with a modern Bubble Tea TUI. The first feature, `kitchen
-log`, streams live Kubernetes logs from every pod of a deployment into a
-single colour-coded viewer. JIRA and GitHub integrations will be added later.
+A small developer toolbox for working with the mafin Kubernetes cluster:
+stream logs, browse running webtops, and roll out (or tear down) a webtop
+against any coreo backend — all from a fullscreen TUI.
 
 ## Install
 
@@ -10,67 +10,69 @@ single colour-coded viewer. JIRA and GitHub integrations will be added later.
 curl -fsSL https://raw.githubusercontent.com/jiripisa/kitchen/main/scripts/install.sh | sh
 ```
 
-The script detects your OS/arch (linux & darwin, amd64 & arm64), verifies the
-release checksum, and installs to `~/.local/bin` (no sudo needed). This also
-means `kitchen upgrade` always works without sudo. Make sure `~/.local/bin`
-is on your `$PATH` — the installer prints a hint if it isn't.
+Detects your OS / arch, verifies the release checksum, and installs to
+`~/.local/bin` (no sudo). Make sure `~/.local/bin` is on your `$PATH` — the
+installer prints a hint if it isn't. Run `kitchen upgrade` later to update.
 
-Want the binary somewhere else (e.g. `/usr/local/bin`)?
+Want the binary somewhere else?
 
 ```sh
 curl -fsSL .../install.sh | KITCHEN_INSTALL_DIR=/usr/local/bin sh
 ```
 
-## Usage
+## Commands
 
 ```sh
-kitchen log       # pick namespace → pick deployment → stream logs
-kitchen webtop    # list webtop deployments (image ghcr.io/finforce/mafin-coreo-app) across all namespaces
-kitchen upgrade   # check for a newer release and replace the running binary
-kitchen version   # print version, commit, build date
+kitchen log                 # pick namespace → deployment → stream live logs
+kitchen webtop              # menu: list / deploy / undeploy
+kitchen webtop list         # browse running webtops + their coreo backends
+kitchen webtop deploy       # wizard: pick build → pick coreo → name → deploy
+kitchen webtop undeploy     # remove a webtop you deployed with kitchen
+kitchen upgrade             # self-update to the latest release
+kitchen version             # show version
 ```
 
 ### `kitchen log`
 
-A three-screen TUI:
+Three screens: namespace → deployment → live logs from every pod with
+per-pod colours. `f` toggles follow, `g`/`G` jumps to top/bottom, `Esc`
+goes back, `q` quits.
 
-1. **Namespace picker** — filterable list of all namespaces in the current
-   context. Type to filter, `↑`/`↓` to move, `Enter` to pick, `q`/`Esc` to quit.
-2. **Deployment picker** — deployments in the selected namespace, with ready
-   counts. `Esc` goes back.
-3. **Log viewer** — live logs from every pod, each line prefixed with a
-   per-pod colour. `f` toggles follow on/off, `g`/`G` jumps to top/bottom,
-   `Esc` goes back, `q` quits.
+The last few namespaces & deployments are pinned to the top of the picker
+on subsequent runs (marked with `★`).
 
-The last 5 selected namespaces and deployments are pinned to the top of the
-picker on subsequent runs (marked with `★`, with a dim rule separating them
-from the rest). Recents are stored per kubeconfig context in
-`~/.local/state/kitchen/recents.json`.
+### `kitchen webtop list`
 
-### Prerequisites
+Live list of every webtop deployment in the cluster. Each row shows the
+webtop URL, the coreo it's pointing at, the PR + branch behind it, and how
+long ago the pod last logged something. URLs, PR numbers and branch names
+are clickable. Press `Enter` to view the deployment's full manifest.
 
-`kitchen log` reads `KUBECONFIG`, falling back to `~/.kube/config`. The
-current context is what gets used — switch with `kubectl config use-context`
-beforehand.
+### `kitchen webtop deploy`
 
-## Development
+Three steps:
 
-```sh
-git clone https://github.com/jiripisa/kitchen
-cd kitchen
-go build ./cmd/kitchen
-./kitchen log
-```
+1. **Pick a build** — `main` plus every open PR on the webtop repo. Your
+   own PRs float to the top.
+2. **Pick a coreo backend** — the running coreos in the cluster, with the
+   canonical staging first and the most recently active ones next.
+3. **Name the deployment** — kitchen suggests one and validates as you
+   type. The URL preview updates live.
 
-Run the test suite:
+After confirming, kitchen rolls out the new webtop and prints the URL.
+Give the pod ~30 s to come up before opening it.
 
-```sh
-go test ./...
-```
+### `kitchen webtop undeploy`
 
-## Screenshot
+Lists only the webtops you deployed with kitchen — upstream PR review-apps
+are never shown. Pick one, confirm, and kitchen removes the deployment.
 
-_TODO — add a recording of the log viewer in action._
+## Prerequisites
+
+- `KUBECONFIG` pointing at the mafin cluster (or `~/.kube/config`). Switch
+  contexts with `kubectl config use-context` beforehand.
+- `gh` CLI authenticated (`gh auth login`) for PR / branch listings and
+  for the deploy wizard.
 
 ## License
 
