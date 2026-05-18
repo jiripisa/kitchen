@@ -1,7 +1,7 @@
 // Package coreo implements the `kitchen coreo list` Bubble Tea program: a
-// fullscreen picker over every coreo deployment in the current kubeconfig
-// context, decorated with its PR link, image tag, last-log age, and the
-// number of webtops currently pointing at it (via MAFIN_URL).
+// fullscreen two-panel view of every coreo deployment in the current
+// kubeconfig context. The left panel is the coreo picker; the right panel
+// lists the webtops currently bound to the selected coreo (via MAFIN_URL).
 package coreo
 
 import (
@@ -29,57 +29,44 @@ const (
 	coreoRepoOwner = "finforce"
 	coreoRepoName  = "mafin-coreo"
 
+	webtopRepoOwner = "finforce"
+	webtopRepoName  = "mafin-coreo-app"
+
 	coreoDeployNamePrefix  = "mafin-coreo-"
+	webtopDeployNamePrefix = "mafin-coreo-app-"
 	coreoIngressHostPrefix = "coreo-"
 	mafinHostSuffix        = ".mafin.finforce.dev"
 
 	mafinNamespace = "mafin"
 )
 
+// boundWebtop is one webtop pinned to a coreo backend (MAFIN_URL match).
+type boundWebtop struct {
+	Namespace string
+	Name      string
+	URL       string     // ingress host as https://…
+	Tag       string     // image tag actually deployed
+	PR        *github.PR // PR that spawned this webtop, if any
+	LastLog   time.Time  // most recent log line of the first pod
+}
+
 // entry is one coreo instance with everything we display about it.
 type entry struct {
-	Namespace   string
-	Name        string
-	URL         string     // ingress host as https://…
-	Tag         string     // image tag actually deployed
-	PR          *github.PR // PR that spawned this coreo, if any
-	LastLog     time.Time  // most recent log line of the first pod (zero ⇒ unknown)
-	WebtopCount int        // how many webtops have MAFIN_URL == URL
-	IsMain      bool       // canonical no-suffix staging coreo
+	Namespace string
+	Name      string
+	URL       string     // ingress host as https://…
+	Tag       string     // image tag actually deployed
+	PR        *github.PR // PR that spawned this coreo, if any
+	LastLog   time.Time  // most recent log line of the first pod (zero ⇒ unknown)
+	IsMain    bool       // canonical no-suffix staging coreo
+
+	// Webtops currently bound to this coreo (MAFIN_URL == URL). Sorted by
+	// webtop URL so the right-panel rendering is stable across refreshes.
+	Webtops []boundWebtop
 }
 
-// fetchEntries gathers everything we need to render one `kitchen coreo list`
-// table: deployments, ingresses, coreo PRs, last log times. All fetches run
-// in parallel.
-func fetchEntries(ctx context.Context, client *k8s.Client) ([]entry, error) {
-	var (
-		deps      []k8s.Deployment
-		ingresses []k8s.IngressEndpoint
-		prs       github.Index
-		depsErr   error
-		wg        sync.WaitGroup
-	)
-
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		deps, depsErr = client.ListAllDeployments(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		ingresses, _ = client.ListAllIngresses(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		prs, _ = github.FetchIndex(ctx, coreoRepoOwner, coreoRepoName)
-	}()
-	wg.Wait()
-
-	if depsErr != nil {
-		return nil, depsErr
-	}
-	return entriesFromInputs(deps, buildIngressURLIndex(ingresses), prs, fetchLastLogTimes(ctx, client, deps)), nil
-}
+// WebtopCount is a convenience helper for the picker's footer line.
+func (e entry) WebtopCount() int { return len(e.Webtops) }
 
 // entriesFromInputs builds the displayable entries from the independently
 // fetched data sources. Any input map may be nil; the resulting entries
@@ -87,18 +74,50 @@ func fetchEntries(ctx context.Context, client *k8s.Client) ([]entry, error) {
 func entriesFromInputs(
 	deps []k8s.Deployment,
 	urls map[string]string,
-	prs github.Index,
+	coreoPRs github.Index,
+	webtopPRs github.Index,
 	logTimes map[string]time.Time,
 ) []entry {
-	// Build the webtop → backend map once so the entry loop can read it.
-	webtopCountByURL := map[string]int{}
+	// Build the webtop → backend map once, with full webtop info so the
+	// entry loop can attach the list.
+	boundByCoreo := map[string][]boundWebtop{}
 	for _, d := range deps {
 		if !isWebtopDeployment(d) {
 			continue
 		}
-		if be := webtopBackend(d); be != "" {
-			webtopCountByURL[be]++
+		backend := webtopBackend(d)
+		if backend == "" {
+			continue
 		}
+		key := d.Namespace + "/" + d.Name
+		bw := boundWebtop{
+			Namespace: d.Namespace,
+			Name:      d.Name,
+			Tag:       webtopImageTagOf(d),
+		}
+		if urls != nil {
+			bw.URL = urls[key]
+		}
+		if webtopPRs != nil {
+			if pr, ok := webtopPRs[webtopSlugFromDeploymentName(d.Name)]; ok {
+				bw.PR = &pr
+			}
+		}
+		if logTimes != nil {
+			bw.LastLog = logTimes[key]
+		}
+		boundByCoreo[backend] = append(boundByCoreo[backend], bw)
+	}
+	// Stable sort of the bound webtops so refreshes don't reshuffle the
+	// right panel rows.
+	for k := range boundByCoreo {
+		sort.SliceStable(boundByCoreo[k], func(i, j int) bool {
+			a, b := boundByCoreo[k][i], boundByCoreo[k][j]
+			if a.URL != b.URL {
+				return a.URL < b.URL
+			}
+			return a.Name < b.Name
+		})
 	}
 
 	out := make([]entry, 0, len(deps))
@@ -116,8 +135,8 @@ func entriesFromInputs(
 		if urls != nil {
 			e.URL = urls[key]
 		}
-		if prs != nil {
-			if pr, ok := prs[coreoSlugFromDeploymentName(d.Name)]; ok {
+		if coreoPRs != nil {
+			if pr, ok := coreoPRs[coreoSlugFromDeploymentName(d.Name)]; ok {
 				e.PR = &pr
 			}
 		}
@@ -125,7 +144,7 @@ func entriesFromInputs(
 			e.LastLog = logTimes[key]
 		}
 		if e.URL != "" {
-			e.WebtopCount = webtopCountByURL[e.URL]
+			e.Webtops = boundByCoreo[e.URL]
 		}
 		out = append(out, e)
 	}
@@ -148,9 +167,9 @@ func entriesFromInputs(
 	return out
 }
 
-// fetchLastLogTimes asks every coreo deployment for its most recent log
-// timestamp, in parallel. Mirrors the helper in the webtop package but with
-// a coreo-only filter so we don't pay the API for unrelated deployments.
+// fetchLastLogTimes asks every coreo and webtop deployment for its most
+// recent log timestamp, in parallel. Both apps are queried so the right
+// panel can show webtop ages alongside the coreo's.
 func fetchLastLogTimes(ctx context.Context, client *k8s.Client, deps []k8s.Deployment) map[string]time.Time {
 	type result struct {
 		key string
@@ -159,7 +178,7 @@ func fetchLastLogTimes(ctx context.Context, client *k8s.Client, deps []k8s.Deplo
 
 	relevant := make([]k8s.Deployment, 0, len(deps))
 	for _, d := range deps {
-		if isCoreoDeployment(d) {
+		if isCoreoDeployment(d) || isWebtopDeployment(d) {
 			relevant = append(relevant, d)
 		}
 	}
@@ -244,6 +263,15 @@ func coreoImageTagOf(d k8s.Deployment) string {
 	return ""
 }
 
+func webtopImageTagOf(d k8s.Deployment) string {
+	for _, c := range d.Containers {
+		if isWebtopImage(c.Image) {
+			return imageTag(c.Image)
+		}
+	}
+	return ""
+}
+
 func imageTag(image string) string {
 	if i := strings.LastIndex(image, "@"); i > 0 {
 		return image[i+1:]
@@ -279,9 +307,17 @@ func coreoSlugFromDeploymentName(name string) string {
 	return strings.TrimPrefix(name, coreoDeployNamePrefix)
 }
 
+// webtopSlugFromDeploymentName mirrors coreoSlug… for the webtop side.
+func webtopSlugFromDeploymentName(name string) string {
+	if name == strings.TrimSuffix(webtopDeployNamePrefix, "-") {
+		return ""
+	}
+	return strings.TrimPrefix(name, webtopDeployNamePrefix)
+}
+
 // coreoSlugFromURL extracts the slug from `https://coreo-<slug>.mafin…`. Kept
 // here for completeness — currently unused by the list but symmetric with
-// the webtop package and useful when extending.
+// the webtop package.
 func coreoSlugFromURL(rawURL string) string {
 	if rawURL == "" {
 		return ""

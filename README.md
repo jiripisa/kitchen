@@ -70,10 +70,11 @@ are never shown. Pick one, confirm, and kitchen removes the deployment.
 
 ### `kitchen coreo list`
 
-Mirror of `webtop list` but for the coreo backend. Each row shows the
-coreo URL, the PR + branch behind it, time since the last log line, and
-how many webtops are currently pointing at it via `MAFIN_URL`. Press
-`Enter` to view the deployment's manifest.
+Two-panel view. The left panel lists every coreo deployment (URL, PR,
+branch, last-log age, and how many webtops are pointing at it). The
+right panel shows the **webtops bound to the highlighted coreo** —
+their URLs, PRs and ages — so you can see at a glance who is using
+this backend. Press `Enter` to open the coreo's manifest.
 
 ## Prerequisites
 
