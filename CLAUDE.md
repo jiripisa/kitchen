@@ -21,6 +21,8 @@ Today's subcommands:
 | `kitchen webtop list`      | Live picker of running webtops with coreo backend, PR + tag links       |
 | `kitchen webtop deploy`    | Three-step wizard: pick build → pick coreo → name → apply k8s.yml       |
 | `kitchen webtop undeploy`  | Remove a kitchen-created webtop (filtered by `managed-by=kitchen` label)|
+| `kitchen coreo`            | Coreo subcommand group (currently `list`)                               |
+| `kitchen coreo list`       | Live picker of running coreos with PR/tag links and bound-webtop count  |
 | `kitchen upgrade`          | Self-update from GitHub Releases                                        |
 | `kitchen version`          | Print version, commit, build date                                       |
 

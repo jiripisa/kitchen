@@ -28,6 +28,7 @@ kitchen webtop              # menu: list / deploy / undeploy
 kitchen webtop list         # browse running webtops + their coreo backends
 kitchen webtop deploy       # wizard: pick build → pick coreo → name → deploy
 kitchen webtop undeploy     # remove a webtop you deployed with kitchen
+kitchen coreo list          # browse running coreos + how many webtops point at each
 kitchen upgrade             # self-update to the latest release
 kitchen version             # show version
 ```
@@ -66,6 +67,13 @@ Give the pod ~30 s to come up before opening it.
 
 Lists only the webtops you deployed with kitchen — upstream PR review-apps
 are never shown. Pick one, confirm, and kitchen removes the deployment.
+
+### `kitchen coreo list`
+
+Mirror of `webtop list` but for the coreo backend. Each row shows the
+coreo URL, the PR + branch behind it, time since the last log line, and
+how many webtops are currently pointing at it via `MAFIN_URL`. Press
+`Enter` to view the deployment's manifest.
 
 ## Prerequisites
 

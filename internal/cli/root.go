@@ -15,6 +15,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	root.AddCommand(newCoreoCmd())
 	root.AddCommand(newLogCmd())
 	root.AddCommand(newUpgradeCmd())
 	root.AddCommand(newVersionCmd())
