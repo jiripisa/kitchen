@@ -39,9 +39,14 @@ const (
 	// runs full-width again.
 	rightMinWidth      = 42 // "  PR #N  TAG  AGE" + panel padding fits cleanly here
 	rightPanelPadding  = 2  // lipgloss panel Padding(0, 1) on each side
-	leftMinPanelWidth  = 50 // URL + PR + age + cursor without the tag column
+	leftMinPanelWidth  = 55 // URL + PR + skinny tag + age + cursor — keeps the tag link visible
 	dividerCols        = 3  // " │ "
 	minTotalForSplit   = 90
+
+	// Column shrink/grow envelopes for the left panel's row layout.
+	urlMinDisplay       = 20
+	tagMinDisplay       = 6
+	tagSkinnyDisplay    = 12
 )
 
 // kindPR distinguishes which PR index a prsLoadedMsg carries.
@@ -546,9 +551,11 @@ type colWidths struct {
 	hasTag bool
 }
 
-// computeColWidths derives column widths from the data, then shrinks them to
-// fit the available leftWidth. URL gets the lion's share; the tag column is
-// the first to go when space is tight.
+// computeColWidths derives column widths from the data, then fits them into
+// the available leftWidth. The tag column is treated as load-bearing — it
+// carries the clickable branch/tag link — so URL shrinks first, the tag
+// only drops as an absolute last resort when even its minimum width plus a
+// minimum URL won't fit.
 func computeColWidths(es []entry, leftWidth int) colWidths {
 	cw := colWidths{hasTag: true}
 	for _, e := range es {
@@ -578,56 +585,49 @@ func computeColWidths(es []entry, leftWidth int) colWidths {
 	if leftWidth <= 0 {
 		return cw
 	}
-	// Fixed overhead inside one rendered row (delegate Render builds this
-	// shape: "▸ <URL>  <PR>  <TAG>  <AGE>"). 2 for cursor, then 2 spaces
-	// between each column.
+
+	// Layout shape with the tag column present:
+	//   "▸ <URL>  <PR>  <TAG>  <AGE>" + 1 spare cell
 	const cursor = 2
-	gap := 2
-	overhead := cursor + gap + cw.pr + gap + ageWidth + 1 // +1 spare
+	const gap = 2
+	fixedWithTag := cursor + gap + cw.pr + gap + gap + ageWidth + 1
+	fixedNoTag := cursor + gap + cw.pr + gap + ageWidth + 1
 
-	available := leftWidth - overhead
-	if cw.hasTag {
-		available -= gap // for the gap before the tag
-	}
-	if available <= 0 {
-		// Crammed; drop tag and try again.
-		cw.hasTag = false
-		cw.tag = 0
-		available = leftWidth - cursor - gap - cw.pr - gap - ageWidth - 1
-		if available < 10 {
-			available = 10
-		}
-		if cw.url > available {
-			cw.url = available
-		}
+	// Step 0 — everything fits with widths the data wants.
+	if cw.url+cw.tag+fixedWithTag <= leftWidth {
 		return cw
 	}
 
-	// Allocate proportionally between URL and TAG. URL takes priority.
-	if cw.url+cw.tag <= available {
+	// Step 1 — bring an oversized tag column down to a skinny working width.
+	if cw.tag > tagSkinnyDisplay {
+		cw.tag = tagSkinnyDisplay
+	}
+	if cw.url+cw.tag+fixedWithTag <= leftWidth {
 		return cw
 	}
-	// First shrink the tag toward its minimum useful width (10).
-	targetTag := cw.tag
-	if available-cw.url < cw.tag {
-		targetTag = available - cw.url
-	}
-	if targetTag < 10 {
-		// Tag is getting too short; drop it entirely.
-		cw.hasTag = false
-		cw.tag = 0
-		available = leftWidth - cursor - gap - cw.pr - gap - ageWidth - 1
-		if cw.url > available {
-			cw.url = available
-		}
+
+	// Step 2 — keep the tag at its current width and shrink the URL.
+	if target := leftWidth - cw.tag - fixedWithTag; target >= urlMinDisplay {
+		cw.url = target
 		return cw
 	}
-	cw.tag = targetTag
-	if cw.url+cw.tag > available {
-		cw.url = available - cw.tag
+
+	// Step 3 — shrink the tag toward its minimum, then check again.
+	if cw.tag > tagMinDisplay {
+		cw.tag = tagMinDisplay
 	}
-	if cw.url < 20 {
-		cw.url = 20
+	if target := leftWidth - cw.tag - fixedWithTag; target >= urlMinDisplay {
+		cw.url = target
+		return cw
+	}
+
+	// Step 4 — last resort: drop the tag column and give URL the room.
+	cw.hasTag = false
+	cw.tag = 0
+	if target := leftWidth - fixedNoTag; target >= urlMinDisplay {
+		cw.url = target
+	} else {
+		cw.url = urlMinDisplay
 	}
 	return cw
 }
