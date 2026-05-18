@@ -14,12 +14,15 @@ provides quick views over deployments, logs, etc.
 
 Today's subcommands:
 
-| Command           | Purpose                                                       |
-| ----------------- | ------------------------------------------------------------- |
-| `kitchen log`     | Three-screen TUI: namespace → deployment → live log viewer    |
-| `kitchen webtop`  | Table: which webtops point to which coreo backends + their URLs |
-| `kitchen upgrade` | Self-update from GitHub Releases                              |
-| `kitchen version` | Print version, commit, build date                             |
+| Command                    | Purpose                                                                 |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `kitchen log`              | Three-screen TUI: namespace → deployment → live log viewer              |
+| `kitchen webtop`           | Top-level menu (list / deploy / undeploy)                               |
+| `kitchen webtop list`      | Live picker of running webtops with coreo backend, PR + tag links       |
+| `kitchen webtop deploy`    | Three-step wizard: pick build → pick coreo → name → apply k8s.yml       |
+| `kitchen webtop undeploy`  | Remove a kitchen-created webtop (filtered by `managed-by=kitchen` label)|
+| `kitchen upgrade`          | Self-update from GitHub Releases                                        |
+| `kitchen version`          | Print version, commit, build date                                       |
 
 ---
 

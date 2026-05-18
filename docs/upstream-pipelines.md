@@ -186,10 +186,12 @@ Ingress    mafin-coreo-app[-<SUFFIX>]   rules[0].host = webtop-<SUFFIX>.mafin.fi
 
 | Kitchen feature      | Assumption                                                                 |
 | -------------------- | -------------------------------------------------------------------------- |
-| `kitchen webtop` identifies webtop deployments | image starts with `ghcr.io/finforce/mafin-coreo-app` |
-| `kitchen webtop` reads the COREO column        | env var `MAFIN_URL` on the webtop container, as a literal value |
-| `kitchen webtop` reads the WEBTOP URL column   | Ingress in the same namespace whose backend service name equals the deployment name; host is `webtop-<SUFFIX>.mafin.finforce.dev`, served as HTTPS |
-| `kitchen webtop` links deployments to PRs      | the SUFFIX in a Deployment name (webtop) and the SUFFIX in a coreo Ingress host both equal `EFFECTIVE_SLUG(headRef)` produced by `finforce/actions-base@main` — see `internal/github.EffectiveSlug` for the Go re-implementation |
+| `kitchen webtop list` identifies webtop deployments | image starts with `ghcr.io/finforce/mafin-coreo-app` |
+| `kitchen webtop list` reads the COREO column        | env var `MAFIN_URL` on the webtop container, as a literal value |
+| `kitchen webtop list` reads the WEBTOP URL column   | Ingress in the same namespace whose backend service name equals the deployment name; host is `webtop-<SUFFIX>.mafin.finforce.dev`, served as HTTPS |
+| `kitchen webtop list` links deployments to PRs      | the SUFFIX in a Deployment name (webtop) and the SUFFIX in a coreo Ingress host both equal `EFFECTIVE_SLUG(headRef)` produced by `finforce/actions-base@main` — see `internal/github.EffectiveSlug` for the Go re-implementation |
+| `kitchen webtop deploy` renders new webtops         | fetches the upstream `k8s.yml` from `mafin-coreo-app@main` via `gh api`, applies the same SUFFIX / IMAGE_TAG / COREO_URL / NONCE substitution as `script/deploy-custom`, then injects `app.kubernetes.io/managed-by=kitchen` on Deployment / Service / Ingress + provenance annotations on the Deployment (`kitchen.finforce.dev/branch`, `…/image-tag`, `…/coreo-backend`, `…/created-by`, `…/created-at`). Will silently produce a broken pod if upstream renames a placeholder or stops exposing `k8s.yml` at the repo root. |
+| `kitchen webtop undeploy` finds removable deployments | selects on label `app.kubernetes.io/managed-by=kitchen` in the `mafin` namespace, so upstream review-apps never appear in the picker. |
 | `kitchen log` shows pods of a deployment       | standard k8s deployment → ReplicaSet → Pod label selectors |
 
 Any change to the upstream pipelines that breaks one of these assumptions
