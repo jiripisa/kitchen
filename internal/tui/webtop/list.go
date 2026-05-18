@@ -168,8 +168,9 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 	case deploymentsLoadedMsg:
 		m.loading = false
 		m.deps = msg.deps
-		m.refreshItems()
+		refresh := m.refreshItems()
 		return m, tea.Batch(
+			refresh,
 			m.loadIngressesCmd(),
 			loadPRsCmd(webtopRepoOwner, webtopRepoName, prKindWebtop),
 			loadPRsCmd(coreoRepoOwner, coreoRepoName, prKindCoreo),
@@ -178,8 +179,7 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 
 	case ingressesLoadedMsg:
 		m.urls = msg.urls
-		m.refreshItems()
-		return m, nil
+		return m, m.refreshItems()
 
 	case prsLoadedMsg:
 		switch msg.kind {
@@ -188,13 +188,11 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 		case prKindCoreo:
 			m.coreoPRs = msg.index
 		}
-		m.refreshItems()
-		return m, nil
+		return m, m.refreshItems()
 
 	case logTimesLoadedMsg:
 		m.logTimes = msg.times
-		m.refreshItems()
-		return m, scheduleLogRefresh()
+		return m, tea.Batch(m.refreshItems(), scheduleLogRefresh())
 
 	case logTimesRefreshMsg:
 		if m.deps == nil {
@@ -205,8 +203,7 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 	case ageTickMsg:
 		// Trigger a re-render so "Xs/Xm" ages stay fresh between fetches.
 		// Cheaper than re-fetching log times every second.
-		m.refreshItems()
-		return m, ageTickCmd()
+		return m, tea.Batch(m.refreshItems(), ageTickCmd())
 
 	case loadErrMsg:
 		m.loading = false
@@ -252,7 +249,13 @@ func (m *listModel) Update(msg tea.Msg) (*listModel, tea.Cmd) {
 
 // refreshItems rebuilds the list's items from the currently-known inputs.
 // Safe to call as data trickles in — the order is stable (see entriesFromInputs).
-func (m *listModel) refreshItems() {
+//
+// SetItems returns a tea.Cmd that re-runs the active filter against the new
+// items. Callers MUST thread that cmd back to bubbletea, otherwise the
+// list's filtered-items slice gets nilled out and the view goes empty while
+// the user is typing. The ageTickMsg refresh that fires every second is the
+// most visible trigger.
+func (m *listModel) refreshItems() tea.Cmd {
 	entries := entriesFromInputs(m.deps, m.urls, m.webtopPRs, m.coreoPRs, m.logTimes)
 	m.cw = computeColWidths(entries)
 	items := make([]list.Item, 0, len(entries))
@@ -261,10 +264,11 @@ func (m *listModel) refreshItems() {
 	}
 	// Preserve the cursor position so periodic refreshes don't jump it.
 	cur := m.list.Index()
-	m.list.SetItems(items)
+	cmd := m.list.SetItems(items)
 	if cur >= 0 && cur < len(items) {
 		m.list.Select(cur)
 	}
+	return cmd
 }
 
 func (m *listModel) View() string {
