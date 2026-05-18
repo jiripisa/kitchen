@@ -2,6 +2,8 @@ package webtop
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
@@ -520,17 +522,20 @@ func isHTTP(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
-// hyperlink wraps body in an OSC 8 hyperlink envelope. We use the canonical
-// `OSC 8 ; ; URI BEL` form (matching `charmbracelet/x/ansi.SetHyperlink`) —
-// the alternative `ESC \` (ST) terminator is technically also valid but some
-// terminals (notably some VTE/GNOME builds) only recognise links reliably
-// when terminated with BEL, especially when several adjacent links share a
-// line.
+// hyperlink wraps body in an OSC 8 hyperlink envelope using the canonical
+// BEL-terminated form. A stable `id=` parameter derived from the URL is
+// included so terminals can't accidentally merge two distinct links that
+// happen to live next to each other on the same row — bubbletea's renderer
+// re-emits every changed line on each frame, and without an `id` some
+// terminals (notably iTerm2 in alt-screen + cursor-positioning mode) latch
+// onto the first link on a row and ignore the rest.
 func hyperlink(url, body string) string {
 	if url == "" {
 		return body
 	}
-	return "\x1b]8;;" + url + "\x07" + body + "\x1b]8;;\x07"
+	h := sha1.Sum([]byte(url))
+	id := hex.EncodeToString(h[:4])
+	return "\x1b]8;id=k" + id + ";" + url + "\x07" + body + "\x1b]8;;\x07"
 }
 
 // --- filter / typing helpers --------------------------------------------------
